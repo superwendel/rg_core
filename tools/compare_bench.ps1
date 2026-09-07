@@ -23,6 +23,7 @@ if (![IO.Path]::IsPathRooted($OutputPath)) { $OutputPath = Join-Path $repo $Outp
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 $builds = @{
     baseline= $(if ([IO.Path]::IsPathRooted($BaselineBuildPath)) { $BaselineBuildPath } else { Join-Path $repo $BaselineBuildPath })
+    candidate= $(if ([IO.Path]::IsPathRooted($CandidateBuildPath)) { $CandidateBuildPath } else { Join-Path $repo $CandidateBuildPath })
 }
 $culture = [Globalization.CultureInfo]::InvariantCulture
 $rawRuns = @{}
