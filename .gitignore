@@ -53,3 +53,10 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Generated benchmark and test output
+.bench-build/
+.test-build/
+
+# Local investigation archives
+.review-build/

@@ -51,6 +51,11 @@ Array operations:
 removal preserve order; swap removal replaces the removed element with the
 last element. `back` and `pop` require a nonempty array.
 
+Push reserves capacity first, then evaluates the value once before incrementing
+the length. This allows self-appends such as
+`rg_array_push(int, &values, *rg_array_back(&values))`, including when growth is
+needed. Insert captures the value before growth or shifting existing elements.
+
 ## Small vectors
 
 A small vector stores its first elements inside the container and allocates
@@ -70,6 +75,17 @@ if (rg_smallvec_is_inline(&values))
 The inline capacity passed to `RG_SMALLVEC_DEFINE` must be greater than zero.
 Once a vector spills into its arena, clearing it retains the allocated storage;
 it does not move back to inline storage.
+
+Initialize a small vector at its final address. While it uses inline storage,
+its `data` pointer refers into that specific container object. Copying the struct,
+returning it by value, or moving it in a growing array or ECS component store
+leaves the copied pointer referring to the original object. To make an independent
+copy, initialize the destination and push the source elements into it.
+
+Small-vector push reserves capacity first, then evaluates the value once before
+incrementing the length. Self-appends remain valid when spilling because reserve
+preserves the existing elements and length. Small-vector insert captures the
+value before growth or length changes.
 
 Small-vector operations:
 
@@ -160,8 +176,8 @@ custom assertion handler returns.
 
 ## Performance and complexity
 
-In the published benchmark, one million pushes into a reserved `rg_array`
-completed in 0.69 ms versus 1.48 ms for `std::vector`. Reserved sparse-set
+In earlier measurements, one million pushes into a reserved `rg_array` completed
+in 0.69 ms versus 1.48 ms for `std::vector`. Reserved sparse-set
 insertion completed in 0.38 ms versus 2.01 ms for EnTT. See the
 [core benchmark report](benchmarks/rg_core.md#rg_containers) for the complete
 container results, methodology, and allocation caveats.

@@ -8,15 +8,17 @@
 // src/asm/sprintf/linux_x64/rg_sprintf_asm_x64.S). Define RG_SPRINTF_NO_ASM to force C.
 //
 // OPTIONS:
-//   #define RG_SPRINTF_HYBRID_FORCE_C   - Always use rg_sprintf.h
-//   #define RG_SPRINTF_HYBRID_FORCE_ASM - Always use rg_sprintf_asm.h
+//   #define RG_SPRINTF_HYBRID_FORCE_C   - Select rg_sprintf.h if none is included
+//   #define RG_SPRINTF_HYBRID_FORCE_ASM - Select rg_sprintf_asm.h if none is included
 //
 // Author: Steven Wendel (superwendel)
 
 #ifndef RG_SPRINTF_HYBRID_H
 #define RG_SPRINTF_HYBRID_H
 
-#if defined(RG_SPRINTF_HYBRID_FORCE_C) || defined(RG_SPRINTF_NO_ASM)
+#if defined(RG_SPRINTF_H) || defined(RG_SPRINTF_ASM_H)
+// Keep the implementation already selected by a direct or indirect include.
+#elif defined(RG_SPRINTF_HYBRID_FORCE_C) || defined(RG_SPRINTF_NO_ASM)
 #include "rg_sprintf.h"
 #elif defined(RG_SPRINTF_HYBRID_FORCE_ASM) || defined(RG_SPRINTF_HAS_ASM)
 #include "rg_sprintf_asm.h"

@@ -10,12 +10,13 @@
 //   rg_input_init(&input);
 //
 //   // Per frame:
-//   rg_input_update(&input); // call before processing events
+//   rg_input_begin_frame(&input);
 //   SDL_Event event;
 //   while (SDL_PollEvent(&event))
 //   {
 //       rg_input_process_event(&input, &event);
 //   }
+//   rg_input_sample(&input); // consume input after SDL has pumped events
 //
 // OPTIONS:
 //   #define RG_INPUT_TEXT_BUFFER_SIZE  - Text input buffer size (default: 32)
@@ -23,7 +24,8 @@
 //
 // NOTES:
 //   - All functions have internal linkage and work in unity builds.
-//   - Call rg_input_update before SDL_PollEvent to reset per-frame state.
+//   - Begin before polling; sample once after polling, before gameplay.
+//   - Neither helper pumps SDL events.
 //
 // Author: Steven Wendel (superwendel)
 
@@ -201,10 +203,18 @@ typedef struct RgInputState
 RGINLINE void rg_input_init(RgInputState* input);
 
 /**
- * @brief Update input state from SDL (call before event processing)
+ * @brief Snapshot previous state and clear text/wheel fields before polling
  * @param input Input state
  */
-RGINLINE void rg_input_update(RgInputState* input);
+RGINLINE void rg_input_begin_frame(RgInputState* input);
+
+/**
+ * @brief Sample SDL keyboard/mouse state after polling, before gameplay
+ * @param input Input state
+ * @note Call once per frame, including empty frames. Does not pump events or
+ *       clear text, wheel, previous state, or the ordered event queue.
+ */
+RGINLINE void rg_input_sample(RgInputState* input);
 
 /**
  * @brief Initialize an optional ordered event queue with caller-owned storage
@@ -335,21 +345,31 @@ RGINLINE void rg_input_init(RgInputState* input)
 	memset(input, 0, sizeof(*input));
 }
 
-RGINLINE void rg_input_update(RgInputState* input)
+RGINLINE void rg_input_begin_frame(RgInputState* input)
 {
 	RG_INPUT_ASSERT(input != NULL);
 
 	memcpy(input->previous_keyboard, input->current_keyboard, sizeof(input->current_keyboard));
 	memcpy(input->previous_mouse, input->current_mouse, sizeof(input->current_mouse));
 
+	input->has_text_input = false;
+	input->text_input_buffer[0] = '\0';
+	input->mouse_scroll_y = 0.0f;
+}
+
+RGINLINE void rg_input_sample(RgInputState* input)
+{
+	RG_INPUT_ASSERT(input != NULL);
+
 	const bool* keyboard = SDL_GetKeyboardState(NULL);
 	memcpy(input->current_keyboard, keyboard, sizeof(input->current_keyboard));
 
+	SDL_MouseButtonFlags mouse_state;
 	if (input->relative_mouse_enabled)
 	{
 		f32 dx = 0.0f;
 		f32 dy = 0.0f;
-		SDL_GetRelativeMouseState(&dx, &dy);
+		mouse_state = SDL_GetRelativeMouseState(&dx, &dy);
 		input->mouse_delta_x = (int)dx;
 		input->mouse_delta_y = (int)dy;
 	}
@@ -357,23 +377,18 @@ RGINLINE void rg_input_update(RgInputState* input)
 	{
 		f32 mx = 0.0f;
 		f32 my = 0.0f;
-		SDL_GetMouseState(&mx, &my);
+		mouse_state = SDL_GetMouseState(&mx, &my);
 		input->mouse_delta_x = (int)mx - input->mouse_x;
 		input->mouse_delta_y = (int)my - input->mouse_y;
 		input->mouse_x = (int)mx;
 		input->mouse_y = (int)my;
 	}
 
-	SDL_MouseButtonFlags mouse_state = SDL_GetMouseState(NULL, NULL);
 	input->current_mouse[RG_MOUSE_BUTTON_LEFT] = (mouse_state & SDL_BUTTON_LMASK) != 0;
 	input->current_mouse[RG_MOUSE_BUTTON_MIDDLE] = (mouse_state & SDL_BUTTON_MMASK) != 0;
 	input->current_mouse[RG_MOUSE_BUTTON_RIGHT] = (mouse_state & SDL_BUTTON_RMASK) != 0;
 	input->current_mouse[RG_MOUSE_BUTTON_X1] = (mouse_state & SDL_BUTTON_X1MASK) != 0;
 	input->current_mouse[RG_MOUSE_BUTTON_X2] = (mouse_state & SDL_BUTTON_X2MASK) != 0;
-
-	input->has_text_input = false;
-	input->text_input_buffer[0] = '\0';
-	input->mouse_scroll_y = 0.0f;
 }
 
 RGINLINE void rg_input_event_queue_init(RgInputEventQueue* queue,

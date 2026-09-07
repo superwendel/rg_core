@@ -137,7 +137,13 @@ RGINLINE void rg_mat4_swap_row(rg_mat4* m, int row1, int row2);
 RGINLINE void rg_mat4_make(const f32* src, rg_mat4* out);
 RGINLINE void rg_mat4_muln(const rg_mat4* const* matrices, int len, rg_mat4* out);
 RGINLINE void rg_mat4_mul4(const rg_mat4* a, const rg_mat4* b, const rg_mat4* c, const rg_mat4* d, rg_mat4* out);
-RGINLINE void rg_mat4_mul4_fast(const rg_mat4* a, const rg_mat4* b, const rg_mat4* c, const rg_mat4* d, rg_mat4* out);
+/**
+ * @brief Multiply four matrices whose storage is 32-byte aligned
+ * All four inputs and out must be 32-byte aligned, including in arrays or
+ * containing structures. rg_mat4 itself guarantees only 16-byte alignment;
+ * use RG_ALIGN32 storage or rg_mat4_mul4. out may alias any input.
+ */
+RGINLINE void rg_mat4_mul4_aligned32(const rg_mat4* a, const rg_mat4* b, const rg_mat4* c, const rg_mat4* d, rg_mat4* out);
 RGINLINE void rg_mat4_translate_make(rg_mat4* m, const rg_vec3* v);
 RGINLINE void rg_mat4_scale_make(rg_mat4* m, const rg_vec3* v);
 RGINLINE void rg_mat4_rotate_make(rg_mat4* m, f32 angle, const rg_vec3* axis);
@@ -173,8 +179,11 @@ RGINLINE void rg_mat4_decompose_scale_fast(const rg_mat4* m, rg_vec3* s);
 RGINLINE int rg_mat4_uniscaled(const rg_mat4* m);
 RGINLINE void rg_mat4_decompose_rs(const rg_mat4* m, rg_mat4* r, rg_vec3* s);
 RGINLINE void rg_mat4_decompose_trs(const rg_mat4* m, rg_vec3* t, rg_mat4* r, rg_vec3* s);
+/** @brief Decompose a TRS matrix with nonzero scales and no shear. */
 RGINLINE void rg_mat4_decompose(const rg_mat4* m, rg_vec3* t, rg_quat* r, rg_vec3* s);
+/** @brief Approximate TRS decomposition; nonzero scales and no shear required. */
 RGINLINE void rg_mat4_decompose_fast(const rg_mat4* m, rg_vec3* t, rg_quat* r, rg_vec3* s);
+/** @brief Extract a quaternion; max-performance mode requires orthonormal rotation. */
 RGINLINE void rg_quat_from_mat4(const rg_mat4* m, rg_quat* out);
 RGINLINE void rg_mat4_quat(const rg_mat4* m, rg_quat* out);
 RGINLINE void rg_mat4_mul(const rg_mat4* a, const rg_mat4* b, rg_mat4* out);
@@ -198,8 +207,13 @@ RGINLINE void rg_mat4_unproject_no(const rg_mat4* m, const rg_vec3* v, const rg_
 RGINLINE void rg_mat4_unproject_zo(const rg_mat4* m, const rg_vec3* v, const rg_vec4* vp, rg_vec3* out);
 RGINLINE f32 rg_mat4_det(const rg_mat4* m);
 RGINLINE void rg_mat4_inv(const rg_mat4* m, rg_mat4* out);
+/** @brief Invert a nonsingular affine matrix, including scale and shear. */
 RGINLINE void rg_mat4_inv_affine(const rg_mat4* m, rg_mat4* out);
-RGINLINE void rg_mat4_inv_affine_fast(const rg_mat4* m, rg_mat4* out);
+/**
+ * @brief Invert an orthonormal rotation plus translation; out may equal m
+ * The last row must be [0, 0, 0, 1]. Scale and shear are not supported;
+ * use rg_mat4_inv_affine for those transforms. No orthonormality checks run.
+ */
 RGINLINE void rg_mat4_inv_tr(const rg_mat4* m, rg_mat4* out);
 RGINLINE void rg_mat4_perspective(f32 fovy_radians, f32 aspect, f32 near_z, f32 far_z, rg_mat4* out);
 RGINLINE void rg_mat4_perspective_rh_no(f32 fovy_radians, f32 aspect, f32 near_z, f32 far_z, rg_mat4* out);
@@ -782,7 +796,7 @@ RGINLINE void rg_quat_from_mat3(const rg_mat3* m, rg_quat* out)
 		f32 qt = 1.0f + fast_trace;
 		f32 rinv = 0.5f / rg_sqrtf(qt);
 		out->x = rinv * (m->m[6] - m->m[9]);
-		out->y = rinv * (m->m[2] - m->m[8]);
+		out->y = rinv * (m->m[8] - m->m[2]);
 		out->z = rinv * (m->m[1] - m->m[4]);
 		out->w = qt * rinv;
 		return;
@@ -831,7 +845,7 @@ RGINLINE void rg_quat_from_mat3(const rg_mat3* m, rg_quat* out)
 		f32 rt = rg_sqrtf(1.0f + trace);
 		f32 rinv = 0.5f / rt;
 		out->x = rinv * (m21 - m12);
-		out->y = rinv * (m20 - m02);
+		out->y = rinv * (m02 - m20);
 		out->z = rinv * (m10 - m01);
 		out->w = rt * 0.5f;
 	}
@@ -851,7 +865,7 @@ RGINLINE void rg_quat_from_mat3(const rg_mat3* m, rg_quat* out)
 		out->x = rinv * (m01 + m10);
 		out->y = rt * 0.5f;
 		out->z = rinv * (m12 + m21);
-		out->w = rinv * (m20 - m02);
+		out->w = rinv * (m02 - m20);
 	}
 	else
 	{
@@ -3949,7 +3963,7 @@ RGINLINE void rg_mat4_decompose(const rg_mat4* m, rg_vec3* t, rg_quat* r, rg_vec
 			qx = m01 + m10;
 			qy = qt;
 			qz = m12 + m21;
-			qw = m20 - m02;
+			qw = m02 - m20;
 		}
 	}
 	else
@@ -3966,7 +3980,7 @@ RGINLINE void rg_mat4_decompose(const rg_mat4* m, rg_vec3* t, rg_quat* r, rg_vec
 		{
 			qt = 1.0f + m00 + m11 + m22;
 			qx = m21 - m12;
-			qy = m20 - m02;
+			qy = m02 - m20;
 			qz = m10 - m01;
 			qw = qt;
 		}
@@ -4057,7 +4071,7 @@ RGINLINE void rg_mat4_decompose_fast(const rg_mat4* m, rg_vec3* t, rg_quat* r, r
 			qx = m01 + m10;
 			qy = qt;
 			qz = m12 + m21;
-			qw = m20 - m02;
+			qw = m02 - m20;
 		}
 	}
 	else
@@ -4074,7 +4088,7 @@ RGINLINE void rg_mat4_decompose_fast(const rg_mat4* m, rg_vec3* t, rg_quat* r, r
 		{
 			qt = 1.0f + m00 + m11 + m22;
 			qx = m21 - m12;
-			qy = m20 - m02;
+			qy = m02 - m20;
 			qz = m10 - m01;
 			qw = qt;
 		}
@@ -4102,7 +4116,7 @@ RGINLINE void rg_quat_from_mat4(const rg_mat4* m, rg_quat* out)
 		f32 qt = 1.0f + fast_trace;
 		f32 rinv = 0.5f / rg_sqrtf(qt);
 		out->x = rinv * (m->m[6] - m->m[9]);
-		out->y = rinv * (m->m[2] - m->m[8]);
+		out->y = rinv * (m->m[8] - m->m[2]);
 		out->z = rinv * (m->m[1] - m->m[4]);
 		out->w = qt * rinv;
 		return;
@@ -4156,7 +4170,7 @@ RGINLINE void rg_quat_from_mat4(const rg_mat4* m, rg_quat* out)
 		f32 rinv = 0.5f / rt;
 #endif
 		out->x = rinv * (m21 - m12);
-		out->y = rinv * (m20 - m02);
+		out->y = rinv * (m02 - m20);
 		out->z = rinv * (m10 - m01);
 #if RG_MATH_MAX_PERF
 		out->w = qt * rinv;
@@ -4198,7 +4212,7 @@ RGINLINE void rg_quat_from_mat4(const rg_mat4* m, rg_quat* out)
 		out->y = rt * 0.5f;
 #endif
 		out->z = rinv * (m12 + m21);
-		out->w = rinv * (m20 - m02);
+		out->w = rinv * (m02 - m20);
 	}
 	else
 	{
@@ -4470,7 +4484,7 @@ RGINLINE void rg_mat4_mul4(const rg_mat4* a, const rg_mat4* b, const rg_mat4* c,
 #endif
 }
 
-RGINLINE void rg_mat4_mul4_fast(const rg_mat4* a, const rg_mat4* b, const rg_mat4* c, const rg_mat4* d, rg_mat4* out)
+RGINLINE void rg_mat4_mul4_aligned32(const rg_mat4* a, const rg_mat4* b, const rg_mat4* c, const rg_mat4* d, rg_mat4* out)
 {
 #if defined(RG_MATH_AVX) && RG_MATH_MAX_PERF
 	RG_MATH_ASSERT((((uintptr_t)a->m) & 31u) == 0u);
@@ -5137,8 +5151,28 @@ RGINLINE void rg_mat4_inv_affine(const rg_mat4* m, rg_mat4* out)
 	out->m[15] = 1.0f;
 }
 
-RGINLINE void rg_mat4_inv_affine_fast(const rg_mat4* m, rg_mat4* out)
+RGINLINE void rg_mat4_inv_tr(const rg_mat4* m, rg_mat4* out)
 {
+#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+	__m128 r0 = _mm_load_ps(&m->m[0]);
+	__m128 r1 = _mm_load_ps(&m->m[4]);
+	__m128 r2 = _mm_load_ps(&m->m[8]);
+	__m128 t = _mm_load_ps(&m->m[12]);
+	__m128 affine_w = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);
+
+	_MM_TRANSPOSE4_PS(r0, r1, r2, affine_w);
+
+	__m128 inv_t = _mm_mul_ps(r0, _mm_shuffle_ps(t, t, _MM_SHUFFLE(0, 0, 0, 0)));
+	inv_t = RG_MATH_FMADD_PS(r1, _mm_shuffle_ps(t, t, _MM_SHUFFLE(1, 1, 1, 1)), inv_t);
+	inv_t = RG_MATH_FMADD_PS(r2, _mm_shuffle_ps(t, t, _MM_SHUFFLE(2, 2, 2, 2)), inv_t);
+	inv_t = _mm_xor_ps(inv_t, _mm_set1_ps(-0.0f));
+	inv_t = _mm_add_ps(inv_t, _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f));
+
+	_mm_store_ps(&out->m[0], r0);
+	_mm_store_ps(&out->m[4], r1);
+	_mm_store_ps(&out->m[8], r2);
+	_mm_store_ps(&out->m[12], inv_t);
+#else
 	f32 r00 = m->m[0];
 	f32 r01 = m->m[4];
 	f32 r02 = m->m[8];
@@ -5172,31 +5206,6 @@ RGINLINE void rg_mat4_inv_affine_fast(const rg_mat4* m, rg_mat4* out)
 	out->m[13] = -(r01 * tx + r11 * ty + r21 * tz);
 	out->m[14] = -(r02 * tx + r12 * ty + r22 * tz);
 	out->m[15] = 1.0f;
-}
-
-RGINLINE void rg_mat4_inv_tr(const rg_mat4* m, rg_mat4* out)
-{
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
-	__m128 r0 = _mm_load_ps(&m->m[0]);
-	__m128 r1 = _mm_load_ps(&m->m[4]);
-	__m128 r2 = _mm_load_ps(&m->m[8]);
-	__m128 t = _mm_load_ps(&m->m[12]);
-	__m128 affine_w = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);
-
-	_MM_TRANSPOSE4_PS(r0, r1, r2, affine_w);
-
-	__m128 inv_t = _mm_mul_ps(r0, _mm_shuffle_ps(t, t, _MM_SHUFFLE(0, 0, 0, 0)));
-	inv_t = RG_MATH_FMADD_PS(r1, _mm_shuffle_ps(t, t, _MM_SHUFFLE(1, 1, 1, 1)), inv_t);
-	inv_t = RG_MATH_FMADD_PS(r2, _mm_shuffle_ps(t, t, _MM_SHUFFLE(2, 2, 2, 2)), inv_t);
-	inv_t = _mm_xor_ps(inv_t, _mm_set1_ps(-0.0f));
-	inv_t = _mm_add_ps(inv_t, _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f));
-
-	_mm_store_ps(&out->m[0], r0);
-	_mm_store_ps(&out->m[4], r1);
-	_mm_store_ps(&out->m[8], r2);
-	_mm_store_ps(&out->m[12], inv_t);
-#else
-	rg_mat4_inv_affine_fast(m, out);
 #endif
 }
 
@@ -5490,17 +5499,17 @@ RGINLINE void rg_mat4_look_at_rh(const rg_vec3* eye, const rg_vec3* center, cons
 	f32 uz = sx * fy - sy * fx;
 
 	out->m[0] = sx;
-	out->m[1] = sy;
-	out->m[2] = sz;
+	out->m[1] = ux;
+	out->m[2] = -fx;
 	out->m[3] = 0.0f;
 
-	out->m[4] = ux;
+	out->m[4] = sy;
 	out->m[5] = uy;
-	out->m[6] = uz;
+	out->m[6] = -fy;
 	out->m[7] = 0.0f;
 
-	out->m[8] = -fx;
-	out->m[9] = -fy;
+	out->m[8] = sz;
+	out->m[9] = uz;
 	out->m[10] = -fz;
 	out->m[11] = 0.0f;
 
@@ -5577,17 +5586,17 @@ RGINLINE void rg_mat4_look_at_lh(const rg_vec3* eye, const rg_vec3* center, cons
 	f32 uz = fx * sy - fy * sx;
 
 	out->m[0] = sx;
-	out->m[1] = sy;
-	out->m[2] = sz;
+	out->m[1] = ux;
+	out->m[2] = fx;
 	out->m[3] = 0.0f;
 
-	out->m[4] = ux;
+	out->m[4] = sy;
 	out->m[5] = uy;
-	out->m[6] = uz;
+	out->m[6] = fy;
 	out->m[7] = 0.0f;
 
-	out->m[8] = fx;
-	out->m[9] = fy;
+	out->m[8] = sz;
+	out->m[9] = uz;
 	out->m[10] = fz;
 	out->m[11] = 0.0f;
 

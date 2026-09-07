@@ -6,8 +6,8 @@ ordered queue for systems that need exact event order or IME data.
 
 ## Immediate state
 
-Initialize one `RgInputState`, call `rg_input_update` before polling each frame,
-and pass every SDL event to `rg_input_process_event`:
+Initialize one `RgInputState`. Begin the frame, pass every polled SDL event to
+`rg_input_process_event`, then sample SDL before consuming gameplay input:
 
 ```c
 #include "rg_input.h"
@@ -17,7 +17,7 @@ rg_input_init(&input);
 
 while (running)
 {
-	rg_input_update(&input);
+	rg_input_begin_frame(&input);
 
 	SDL_Event event;
 	while (SDL_PollEvent(&event))
@@ -25,6 +25,7 @@ while (running)
 		rg_input_process_event(&input, &event);
 	}
 
+	rg_input_sample(&input);
 	if (rg_input_is_key_pressed(&input, SDL_SCANCODE_ESCAPE))
 	{
 		running = 0;
@@ -32,10 +33,15 @@ while (running)
 }
 ```
 
-`rg_input_update` snapshots the previous key and mouse-button state, reads the
-new immediate state from SDL, computes mouse movement, and clears the per-frame
-text and wheel fields. Polling afterward lets SDL process this frame's events;
-event-derived text and wheel data then accumulate until the next update.
+`rg_input_begin_frame` snapshots the previous key and mouse-button state and
+clears text and wheel fields. Polling lets SDL pump this frame's events.
+`rg_input_sample` then reads current keyboard/buttons and mouse movement;
+it preserves the text and wheel data collected during polling. Neither helper
+pumps events. Call each once per frame, even when there are no events, on SDL's
+main thread. Query immediate input after sampling.
+
+Immediate state is a snapshot: a key pressed and released within one frame
+may appear released throughout. Use the ordered queue to retain both edges.
 
 Immediate queries are grouped by device:
 
@@ -66,11 +72,13 @@ rg_input_init(&input);
 rg_input_event_queue_init(&queue,
                           events, RG_ARRAY_COUNT(events),
                           event_text, sizeof(event_text));
+// Seed before the first event stream is pumped; carry the final state thereafter.
+rg_input_event_queue_reset(&queue, SDL_GetModState());
 
 while (running)
 {
-	rg_input_update(&input);
-	rg_input_event_queue_reset(&queue, SDL_GetModState());
+	rg_input_begin_frame(&input);
+	rg_input_event_queue_reset(&queue, queue.modifiers);
 
 	SDL_Event event;
 	while (SDL_PollEvent(&event))
@@ -80,6 +88,7 @@ while (running)
 			running = 0;
 	}
 
+	rg_input_sample(&input);
 	for (size_t i = 0; i < queue.count; ++i)
 	{
 		const RgInputEvent* queued = &queue.events[i];
@@ -113,7 +122,7 @@ rg_input_set_text_input(&input, window, 1);
 ```
 
 Pass a window explicitly or null to use SDL's keyboard-focus window. Relative
-mode changes `rg_input_update` to read accumulated relative deltas. Text-input
+mode changes `rg_input_sample` to read accumulated relative deltas. Text-input
 mode controls SDL's text-input session; `text_input_buffer` holds the latest
 text event truncated to `RG_INPUT_TEXT_BUFFER_SIZE`, while the ordered queue can
 retain multiple text and editing events up to caller-provided capacity.

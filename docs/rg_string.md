@@ -14,7 +14,7 @@ Include the header wherever the functions are used:
 ```
 
 All functions have internal linkage. The header can be included directly in
-unity builds or separately compiled C and C++ translation units.
+unity builds or separately compiled C translation units.
 
 `RgString` additionally requires an initialized `rg_mem` pool and an arena:
 

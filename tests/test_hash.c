@@ -29,11 +29,18 @@ RGINLINE uint64_t test_zero_hash(uint32_t key)
 	return 0;
 }
 
+RGINLINE uint64_t test_identity_hash(uint32_t key)
+{
+	return key;
+}
+
 RG_HASH_MAP_DEFINE(uint32_t, uint32_t, U32Map, rg_hash_u32, rg_hash_eq_u32);
 RG_HASH_MAP_DEFINE(const char*, uint32_t, StrMap, rg_hash_str, rg_hash_eq_str);
 RG_HASH_MAP_DEFINE(uint32_t, uint32_t, CollisionMap, test_zero_hash, rg_hash_eq_u32);
 RG_HASH_SET_DEFINE(uint32_t, U32Set, rg_hash_u32, rg_hash_eq_u32);
 RG_HASH_SET_DEFINE(uint32_t, CollisionSet, test_zero_hash, rg_hash_eq_u32);
+RG_HASH_MAP_DEFINE(uint32_t, uint32_t, ProbeMap, test_identity_hash, rg_hash_eq_u32);
+RG_HASH_SET_DEFINE(uint32_t, ProbeSet, test_identity_hash, rg_hash_eq_u32);
 
 static RgArena arena;
 
@@ -289,6 +296,67 @@ static void test_set_collisions(void)
 		CHECK(rg_hash_set_contains(CollisionSet, &set, key) == ((key & 1u) != 0));
 }
 
+static void test_collision_probe_and_exhausted_update(void)
+{
+	rg_arena_reset(&arena);
+	ProbeMap map;
+	ProbeSet set;
+	rg_hash_map_init(ProbeMap, &map, &arena);
+	rg_hash_set_init(ProbeSet, &set, &arena);
+	CHECK(rg_hash_map_reserve(ProbeMap, &map, 1));
+	CHECK(rg_hash_set_reserve(ProbeSet, &set, 1));
+	CHECK(map.cap == 8 && set.cap == 8);
+
+	// 22 crosses the end of the table and steals slot zero from key 7.
+	const uint32_t keys[] = {6, 14, 7, 22, 30, 38};
+	for (size_t i = 0; i < 5; ++i)
+	{
+		CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[i], keys[i] * 3) == 1);
+		CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[i]) == 1);
+		if (i == 3)
+		{
+			CHECK(map.entries[0].key == 22 && map.entries[1].key == 7);
+			CHECK(set.entries[0].key == 22 && set.entries[1].key == 7);
+		}
+	}
+
+	size_t saved_capacity = arena.capacity;
+	size_t saved_used = arena.used;
+	arena.capacity = arena.used;
+	ProbeMap_Entry* saved_map_entries = map.entries;
+	ProbeSet_Entry* saved_set_entries = set.entries;
+	CHECK(rg_hash_map_try_put(ProbeMap, &map, 22, 999) == 0);
+	CHECK(rg_hash_set_try_insert(ProbeSet, &set, 22) == 0);
+	CHECK(arena.used == saved_used && map.cap == 8 && set.cap == 8);
+
+	CHECK(rg_hash_map_try_put(ProbeMap, &map, 38, 114) == -1);
+	CHECK(rg_hash_set_try_insert(ProbeSet, &set, 38) == -1);
+	CHECK(map.entries == saved_map_entries && map.count == 5 && map.cap == 8);
+	CHECK(set.entries == saved_set_entries && set.count == 5 && set.cap == 8);
+	CHECK(arena.used == saved_used);
+	for (size_t i = 0; i < 5; ++i)
+	{
+		uint32_t* value = rg_hash_map_get_ptr(ProbeMap, &map, keys[i]);
+		CHECK(value != NULL && *value == (keys[i] == 22 ? 999u : keys[i] * 3));
+		CHECK(rg_hash_set_contains(ProbeSet, &set, keys[i]));
+	}
+	CHECK(!rg_hash_map_contains(ProbeMap, &map, 38));
+	CHECK(!rg_hash_set_contains(ProbeSet, &set, 38));
+
+	// Growth must preserve every collided key and the value updated while full.
+	arena.capacity = saved_capacity;
+	CHECK(rg_hash_map_try_put(ProbeMap, &map, 38, 114) == 1);
+	CHECK(map.cap == 16 && map.count == 6);
+	CHECK(rg_hash_set_try_insert(ProbeSet, &set, 38) == 1);
+	CHECK(set.cap == 16 && set.count == 6);
+	for (size_t i = 0; i < RG_ARRAY_COUNT(keys); ++i)
+	{
+		uint32_t* value = rg_hash_map_get_ptr(ProbeMap, &map, keys[i]);
+		CHECK(value != NULL && *value == (keys[i] == 22 ? 999u : keys[i] * 3));
+		CHECK(rg_hash_set_contains(ProbeSet, &set, keys[i]));
+	}
+}
+
 static void test_allocation_failure(void)
 {
 	RgArena tiny = rg_arena_create(KB(1));
@@ -340,6 +408,7 @@ int main(void)
 	test_string_map();
 	test_set_random();
 	test_set_collisions();
+	test_collision_probe_and_exhausted_update();
 	test_allocation_failure();
 
 	rg_arena_free(&arena);

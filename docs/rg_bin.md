@@ -153,5 +153,5 @@ From a Visual Studio Developer Command Prompt:
 build.bat test_bin
 ```
 
-The target runs the public API suite against the default portable path, the
-opt-in direct unaligned path, the bytewise path, and a C++17 build.
+The target runs the C public API suite against the default portable path, the
+opt-in direct unaligned path, and the bytewise path.

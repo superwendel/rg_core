@@ -26,6 +26,8 @@
 //   - Growth allocates new storage; old blocks remain until the arena is reset.
 //   - Reserve expected capacities up front for predictable memory use.
 //   - Container pointer arguments must refer to stable lvalues.
+//   - Initialize small vectors at their final address; do not copy or relocate
+//     the container while its data pointer refers to inline storage.
 //   - A container and its arena may be used by only one thread at a time.
 //
 // Author: Steven Wendel (superwendel)
@@ -248,7 +250,8 @@
 	do                                               \
 	{                                                \
 		rg_array_reserve(type, arr, (arr)->len + 1); \
-		(arr)->data[(arr)->len++] = (value);         \
+		(arr)->data[(arr)->len] = (value);          \
+		(arr)->len++;                              \
 	} while (0)
 
 /**
@@ -450,7 +453,8 @@
 	do                                                  \
 	{                                                   \
 		rg_smallvec_reserve(type, vec, (vec)->len + 1); \
-		(vec)->data[(vec)->len++] = (value);            \
+		(vec)->data[(vec)->len] = (value);             \
+		(vec)->len++;                                 \
 	} while (0)
 
 /**

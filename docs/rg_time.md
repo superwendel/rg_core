@@ -19,7 +19,7 @@ int main(void)
 ```
 
 All functions have internal linkage. The header can be included directly in
-unity builds or separately compiled C and C++ translation units.
+unity builds or separately compiled C translation units.
 
 Native backends are included for Windows, Linux, and macOS. Other platforms
 can provide the four custom hooks described below.

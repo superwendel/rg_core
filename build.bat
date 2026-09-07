@@ -26,6 +26,12 @@ if /I "%TARGET%"=="bench_median" goto bench_median
 if /I "%TARGET%"=="bench_algo" goto bench_algo
 if /I "%TARGET%"=="bench_hash" goto bench_hash
 if /I "%TARGET%"=="bench_containers" goto bench_containers
+if /I "%TARGET%"=="bench_regression" goto bench_regression
+if /I "%TARGET%"=="bench_math" goto bench_regression
+if /I "%TARGET%"=="bench_sprintf" goto bench_regression
+if /I "%TARGET%"=="bench_storage" goto bench_regression
+if /I "%TARGET%"=="bench_input" goto bench_regression
+if /I "%TARGET%"=="bench_prof" goto bench_regression
 
 echo Unknown target: %TARGET%
 exit /b 1
@@ -136,6 +142,10 @@ cl %COMMON_FLAGS% /I "%SDL3_DIR%\include" tests\test_input.c /Fe:test_input.exe 
 if errorlevel 1 exit /b 1
 test_input.exe
 if errorlevel 1 exit /b 1
+cl %COMMON_FLAGS% /I "%SDL3_DIR%\include" tests\test_input_frame.c /Fe:test_input_frame.exe /link /LIBPATH:"%SDL3_DIR%\lib\x64" SDL3.lib
+if errorlevel 1 exit /b 1
+test_input_frame.exe
+if errorlevel 1 exit /b 1
 echo All rg_input tests passed.
 exit /b 0
 
@@ -191,6 +201,8 @@ if errorlevel 1 exit /b 1
 test_sprintf_asm_secure.exe
 if errorlevel 1 exit /b 1
 
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\test_sprintf_includes.ps1"
+if errorlevel 1 exit /b 1
 echo All rg_sprintf tests passed.
 exit /b 0
 
@@ -264,12 +276,6 @@ if errorlevel 1 exit /b 1
 test_mem_secure.exe
 if errorlevel 1 exit /b 1
 
-echo Building C++ rg_mem compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 tests\test_mem.c /Fe:test_mem_cpp.exe
-if errorlevel 1 exit /b 1
-test_mem_cpp.exe
-if errorlevel 1 exit /b 1
-
 echo All rg_mem tests passed.
 exit /b 0
 
@@ -289,12 +295,6 @@ echo Building configured rg_containers tests...
 cl %COMMON_FLAGS% /std:c11 /DRG_CONTAINERS_MIN_CAP=3 /DRG_SPARSE_INVALID=17 /Fo:test_containers_config.obj tests\test_containers.c /Fe:test_containers_config.exe
 if errorlevel 1 exit /b 1
 test_containers_config.exe
-if errorlevel 1 exit /b 1
-
-echo Building C++ rg_containers compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 /Fo:test_containers_cpp.obj tests\test_containers.c /Fe:test_containers_cpp.exe
-if errorlevel 1 exit /b 1
-test_containers_cpp.exe
 if errorlevel 1 exit /b 1
 
 echo All rg_containers tests passed.
@@ -318,12 +318,6 @@ if errorlevel 1 exit /b 1
 test_time_custom.exe
 if errorlevel 1 exit /b 1
 
-echo Building C++ rg_time compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 /Fo:test_time_cpp.obj tests\test_time.c /Fe:test_time_cpp.exe
-if errorlevel 1 exit /b 1
-test_time_cpp.exe
-if errorlevel 1 exit /b 1
-
 echo All rg_time tests passed.
 exit /b 0
 
@@ -343,12 +337,6 @@ echo Building disabled rg_prof tests...
 cl %COMMON_FLAGS% /std:c11 /Fo:test_prof_disabled.obj tests\test_prof_disabled.c /Fe:test_prof_disabled.exe
 if errorlevel 1 exit /b 1
 test_prof_disabled.exe
-if errorlevel 1 exit /b 1
-
-echo Building C++ rg_prof compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 /Fo:test_prof_cpp.obj tests\test_prof.c /Fe:test_prof_cpp.exe
-if errorlevel 1 exit /b 1
-test_prof_cpp.exe
 if errorlevel 1 exit /b 1
 
 echo All rg_prof tests passed.
@@ -378,12 +366,6 @@ if errorlevel 1 exit /b 1
 test_bin_bytewise.exe
 if errorlevel 1 exit /b 1
 
-echo Building C++ rg_bin compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 /DNDEBUG /Fo:test_bin_cpp.obj tests\test_bin.c /Fe:test_bin_cpp.exe
-if errorlevel 1 exit /b 1
-test_bin_cpp.exe
-if errorlevel 1 exit /b 1
-
 echo All rg_bin tests passed.
 exit /b 0
 
@@ -403,12 +385,6 @@ echo Building eager-commit rg_hash tests...
 cl %COMMON_FLAGS% /std:c11 /DRG_MALLOC_LAZY_COMMIT=0 tests\test_hash.c /Fe:test_hash_eager.exe
 if errorlevel 1 exit /b 1
 test_hash_eager.exe
-if errorlevel 1 exit /b 1
-
-echo Building C++ rg_hash compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 tests\test_hash.c /Fe:test_hash_cpp.exe
-if errorlevel 1 exit /b 1
-test_hash_cpp.exe
 if errorlevel 1 exit /b 1
 
 echo All rg_hash tests passed.
@@ -432,12 +408,6 @@ if errorlevel 1 exit /b 1
 test_random_portable.exe
 if errorlevel 1 exit /b 1
 
-echo Building C++ rg_random compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 tests\test_random.c /Fe:test_random_cpp.exe
-if errorlevel 1 exit /b 1
-test_random_cpp.exe
-if errorlevel 1 exit /b 1
-
 echo All rg_random tests passed.
 exit /b 0
 
@@ -457,12 +427,6 @@ echo Building configured rg_algo tests...
 cl %COMMON_FLAGS% /std:c11 /DRG_ALGO_RADIX_BITS=4 /DRG_ALGO_STABLE_RUN=5 /DRG_ALGO_INSERTION_CUTOFF=9 /DRG_ALGO_STACK_CAP=1 /Fo:test_algo_config.obj tests\test_algo.c /Fe:test_algo_config.exe
 if errorlevel 1 exit /b 1
 test_algo_config.exe
-if errorlevel 1 exit /b 1
-
-echo Building C++ rg_algo compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 /Fo:test_algo_cpp.obj tests\test_algo.c /Fe:test_algo_cpp.exe
-if errorlevel 1 exit /b 1
-test_algo_cpp.exe
 if errorlevel 1 exit /b 1
 
 echo All rg_algo tests passed.
@@ -496,12 +460,6 @@ echo Building secure AVX2 rg_string tests...
 cl %COMMON_FLAGS% /std:c11 /arch:AVX2 /DRG_STRING_SECURE /Fo:test_string_secure.obj tests\test_string.c /Fe:test_string_secure.exe
 if errorlevel 1 exit /b 1
 test_string_secure.exe
-if errorlevel 1 exit /b 1
-
-echo Building C++ AVX2 rg_string compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 /arch:AVX2 /Fo:test_string_cpp.obj tests\test_string.c /Fe:test_string_cpp.exe
-if errorlevel 1 exit /b 1
-test_string_cpp.exe
 if errorlevel 1 exit /b 1
 
 echo All rg_string tests passed.
@@ -549,12 +507,12 @@ if errorlevel 1 exit /b 1
 test_math_lean.exe
 if errorlevel 1 exit /b 1
 
-echo Building C++ rg_math compatibility tests...
-cl %COMMON_FLAGS% /TP /std:c++17 /DNDEBUG /Fo:test_math_cpp.obj tests\test_math.c /Fe:test_math_cpp.exe
-if errorlevel 1 exit /b 1
-test_math_cpp.exe
-if errorlevel 1 exit /b 1
-
+for %%m in (RG_MATH_CLIP_CONTROL_RH_ZO RG_MATH_CLIP_CONTROL_LH_NO RG_MATH_CLIP_CONTROL_LH_ZO) do (
+	cl %COMMON_FLAGS% /std:c11 /arch:AVX2 /DRG_MATH_CLIP_CONTROL=%%m /Fo:test_math_clip.obj tests\test_math.c /Fe:test_math_clip.exe
+	if errorlevel 1 exit /b 1
+	test_math_clip.exe
+	if errorlevel 1 exit /b 1
+)
 echo All rg_math tests passed.
 exit /b 0
 
@@ -642,7 +600,18 @@ bench_containers.exe
 if errorlevel 1 exit /b 1
 exit /b 0
 
+:bench_regression
+call :ensure_compiler
+if errorlevel 1 exit /b 1
+call :find_sdl
+set "BENCH_SUITE=%TARGET:bench_=%"
+if /I "%BENCH_SUITE%"=="regression" set "BENCH_SUITE=all"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\build_bench.ps1" -Suite "%BENCH_SUITE%"
+exit /b %errorlevel%
+
 :clean
+del /q test_math_clip.exe test_math_clip.obj 2>nul
+del /q test_input_frame.exe test_input_frame.obj test_input_frame_cpp.exe test_input_frame_cpp.obj 2>nul
 del /q bench_algo.exe bench_hash.exe bench_containers.exe bench_algo_refs.obj 2>nul
 del /q test_sprintf.exe test_sprintf_scalar.exe test_sprintf_asm.exe 2>nul
 del /q test_sprintf_fallback.exe test_sprintf_asm_fallback.exe 2>nul

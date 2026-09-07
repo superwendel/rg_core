@@ -400,17 +400,22 @@ RGINLINE u32 rg_random_bounded_u32(RgRng* rng, u32 bound)
 		return 0;
 	}
 
-	u32 threshold = (u32)(0u - bound) % bound;
-	for (;;)
+	u64 product = (u64)rg_rng_next_u32(rng) * (u64)bound;
+	u32 low = (u32)product;
+	// The rejection threshold is below bound; most samples need no division.
+	if (low < bound)
 	{
-		u32 value = rg_rng_next_u32(rng);
-		u64 product = (u64)value * (u64)bound;
-		u32 low = (u32)product;
-		if (low >= threshold)
+		u32 threshold = (u32)(0u - bound);
+		// Upper-half bounds already exceed the numerator of the remainder.
+		if (threshold >= bound)
+			threshold %= bound;
+		while (low < threshold)
 		{
-			return (u32)(product >> 32);
+			product = (u64)rg_rng_next_u32(rng) * (u64)bound;
+			low = (u32)product;
 		}
 	}
+	return (u32)(product >> 32);
 }
 
 RGINLINE u64 rg_random_bounded_u64(RgRng* rng, u64 bound)
@@ -420,17 +425,19 @@ RGINLINE u64 rg_random_bounded_u64(RgRng* rng, u64 bound)
 		return 0;
 	}
 
-	u64 threshold = (u64)(0ULL - bound) % bound;
-	for (;;)
+	u64 low;
+	u64 high = rg_random_mul_u64_wide(rg_rng_next_u64(rng), bound, &low);
+	if (low < bound)
 	{
-		u64 value = rg_rng_next_u64(rng);
-		u64 low;
-		u64 high = rg_random_mul_u64_wide(value, bound, &low);
-		if (low >= threshold)
+		u64 threshold = (u64)(0ULL - bound);
+		if (threshold >= bound)
+			threshold %= bound;
+		while (low < threshold)
 		{
-			return high;
+			high = rg_random_mul_u64_wide(rg_rng_next_u64(rng), bound, &low);
 		}
 	}
+	return high;
 }
 
 RGINLINE u32 rg_random_range_u32(RgRng* rng, u32 min, u32 max)
@@ -519,6 +526,21 @@ RGINLINE int rg_random_sign(RgRng* rng)
 	return rg_random_bool(rng) ? 1 : -1;
 }
 
+// Internal shuffle sampler. Keep the eager threshold here to retain the compact
+// inlined swap loop; public bounded sampling uses the division-skipping path.
+// Shuffle supplies a nonzero bound and consumes the same u64 sequence either way.
+RGINLINE u64 rg_random_shuffle_index(RgRng* rng, u64 bound)
+{
+	u64 threshold = (u64)(0ULL - bound) % bound;
+	for (;;)
+	{
+		u64 low;
+		u64 high = rg_random_mul_u64_wide(rg_rng_next_u64(rng), bound, &low);
+		if (low >= threshold)
+			return high;
+	}
+}
+
 RGINLINE void rg_random_shuffle(void* data, size_t count, size_t stride, RgRng* rng)
 {
 	RG_RANDOM_ASSERT(data != NULL || count == 0);
@@ -535,7 +557,7 @@ RGINLINE void rg_random_shuffle(void* data, size_t count, size_t stride, RgRng* 
 	u8* base = (u8*)data;
 	for (size_t i = count - 1; i > 0; i--)
 	{
-		size_t j = (size_t)rg_random_range_u64(rng, 0, (u64)i);
+		size_t j = (size_t)rg_random_shuffle_index(rng, (u64)i + 1ULL);
 		if (i == j)
 		{
 			continue;

@@ -23,8 +23,11 @@ RGINLINE void rg_quat_copy(const rg_quat* q, rg_quat* out);
 RGINLINE void rg_quat_identity(rg_quat* q);
 RGINLINE void rg_quat_identity_array(rg_quat* q, size_t count);
 RGINLINE void rg_quat_make(const f32* src, rg_quat* out);
+/** @brief Construct a rotation; axis must be unit length in max-performance mode. */
 RGINLINE void rg_quat_from_axis_angle(f32 angle_radians, const rg_vec3* axis, rg_quat* out);
+/** @brief Rotation between two unit vectors, including antiparallel vectors. */
 RGINLINE void rg_quat_from_vecs(const rg_vec3* a, const rg_vec3* b, rg_quat* out);
+/** @brief Rotation between two unit vectors that must not be antiparallel. */
 RGINLINE void rg_quat_from_norm_pair_fast(const rg_vec3* a, const rg_vec3* b, rg_quat* out);
 RGINLINE f32 rg_quat_dot(const rg_quat* a, const rg_quat* b);
 RGINLINE f32 rg_quat_len(const rg_quat* q);

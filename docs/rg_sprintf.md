@@ -6,7 +6,7 @@ compatibility for every locale or formatting edge case.
 
 ## Integration
 
-For the fastest supported implementation, include the hybrid header:
+For automatic backend selection, include the hybrid header:
 
 ```c
 #include "rg_sprintf_hybrid.h"
@@ -14,8 +14,9 @@ For the fastest supported implementation, include the hybrid header:
 
 On MSVC x64 AVX2 builds, the hybrid header selects `rg_sprintf_asm.h`. Compile
 and link `src/asm/sprintf/win_x64/rg_sprintf_asm_x64.asm` in that configuration.
-Linux x64 builds can compile `src/asm/sprintf/linux_x64/rg_sprintf_asm_x64.S`
-and define `RG_SPRINTF_HAS_ASM`.
+The Linux x64 helper also requires an AVX2-capable CPU. Compile
+`src/asm/sprintf/linux_x64/rg_sprintf_asm_x64.S` and define `RG_SPRINTF_HAS_ASM`
+to enable it.
 
 Use the portable implementation directly when no assembly object is desired:
 
@@ -32,8 +33,23 @@ Define configuration macros before inclusion when needed:
 #define RG_SPRINTF_ASSERT(x) custom_assert(x)
 ```
 
-`RG_SPRINTF_HYBRID_FORCE_C` and `RG_SPRINTF_HYBRID_FORCE_ASM` provide explicit
-selection. A forced assembly build must link the appropriate platform helper.
+The first formatter implementation included owns the translation unit. Later
+portable, ASM, or hybrid includes retain that choice. For example, including
+`rg_sprintf.h` before `rg_log.h` keeps portable C; including the logger first
+keeps whichever backend its hybrid include selected. This also applies to the
+formatter included by `rg_math_io.h`.
+
+Set configuration before the first formatter-related include. When no backend
+has been included, the hybrid header selects portable C if
+`RG_SPRINTF_NO_ASM` or `RG_SPRINTF_HYBRID_FORCE_C` is defined; otherwise it
+selects the ASM header if `RG_SPRINTF_HYBRID_FORCE_ASM` or
+`RG_SPRINTF_HAS_ASM` is defined, then falls back to platform detection.
+These controls do not replace an implementation already included directly.
+
+`RG_SPRINTF_HYBRID_FORCE_ASM` selects the ASM header. External helpers are
+enabled automatically on MSVC x64 AVX2 or explicitly by `RG_SPRINTF_HAS_ASM`,
+and must be linked when enabled. Directly including `rg_sprintf_asm.h` with
+`RG_SPRINTF_NO_ASM` retains that header's C fallback.
 
 ## Formatting API
 
@@ -46,6 +62,12 @@ int rg_vsnprintf(char* buf, size_t count, const char* fmt, va_list args);
 
 `rg_snprintf` and `rg_vsnprintf` return the number of characters that would
 have been written, excluding the terminator.
+
+String precision bounds source reads: `%.*s` with a nonnegative precision
+accepts a byte slice without a null terminator and reads at most that many
+bytes, stopping earlier at a null. Zero precision does not read the source.
+A negative dynamic precision behaves like an omitted precision and requires a
+null-terminated string. Width adds padding independently of this bound.
 
 Callback output is available through `rg_sprintf_cb` and `rg_vsprintf_cb`.
 Callbacks receive temporary chunks and must consume or copy them before
@@ -69,7 +91,7 @@ provided capacity while preserving null termination when capacity is nonzero.
 
 ![rg_sprintf benchmark results](benchmarks/rg_sprintf-vs-stb.svg)
 
-The figure compares [`stb_sprintf` 1.10](https://github.com/nothings/stb/blob/master/stb_sprintf.h),
+The historical figure compares [`stb_sprintf` 1.10](https://github.com/nothings/stb/blob/master/stb_sprintf.h),
 the portable `rg_sprintf` header, and `rg_sprintf_asm.h` linked with the MASM
 x64 helper. It reports the median of seven process runs. Each process was
 pinned to one logical CPU and raised to high priority, warmed each
@@ -79,18 +101,50 @@ three 10,000,000-call samples.
 All three implementations were built into the same binary with MSVC
 19.44.35217 for x64 using `/O2 /Ob3 /Oi /Ot /Oy /GL /LTCG /arch:AVX2
 /fp:fast /GS- /DNDEBUG`. Measurements were taken on an AMD Ryzen 9 4900HS on
-Windows build 26200.9168 on August 21, 2026, using the public source snapshot
-in this repository.
+Windows build 26200.9168.
 
 The cases cover `%d`, `%08u`, `%x`, `%lld`, `%.6f`, `%.6e`, `%g`, `%s`, and a
 mixed game-style status string containing a name, two integers, and two
-floating-point values. They do not use the experimental corpus from
-development, and the library contains no complete-format dispatch for these
-cases. Values are nanoseconds per call, so lower is better. Results are
+floating-point values. Values are nanoseconds per call, so lower is better.
+The formatter includes exact-format fast paths for several of these cases;
+these numbers therefore include dispatch optimizations. Results are
 machine-specific and should not be treated as a performance guarantee.
+
+### Running the checked-in harness
+
+```bat
+build.bat bench_sprintf
+.bench-build\current\bench_sprintf.exe slice
+.bench-build\current\bench_sprintf.exe --validate
+```
+
+The harness in `benchmarks/bench_sprintf.c` builds the portable and ASM
+backends in separate translation units in one executable. Set `RG_BENCH_DEPS`
+to a directory containing `stb_sprintf.h` to include the optional stb
+comparison; the historical comparison used version 1.10. Source include paths
+select the public headers, including when comparing against an older snapshot.
+
+The current harness has 26 cases per backend. It retains the published
+conversion categories and mixed status format, and adds width-only strings,
+bounded output, short slices of long strings, varied lengths, dynamic positive
+and negative widths, and affixed formats. It uses rotating prebuilt inputs.
+Each case receives one warmup
+and seven samples of 262,144 calls. Output buffers and returned lengths are
+checked against libc and consumed outside each timed block. `--validate` checks
+one batch per case without timing. `BENCH` rows report the case, sample index,
+nanoseconds per call, and checksum; an optional first argument filters case
+names by substring. This harness uses a different sampling and output-consumption
+method from the historical figure, so its measurements should be reported as
+new results rather than treated as a recreation of those exact timings.
+
+Enforcing string-precision bounds can affect code generation and placement
+elsewhere in the formatter. Measure representative formats, string lengths,
+and destination capacities with your build settings.
 
 ## Optimization approach
 
-`rg_sprintf` optimizes general formatting operations such as integer,
-floating-point, and string conversion. It does not contain special cases for
-specific application messages or benchmark format strings.
+`rg_sprintf` optimizes integer, floating-point, and string conversion, and
+recognizes selected complete formats such as `%s`, `%d`, and, in the ASM
+header, `%.6f` and `%08u`. Other formats use the general parser. The library
+does not recognize complete application messages. Benchmark simple complete
+formats, mixed messages, and bounded output separately when choosing a backend.

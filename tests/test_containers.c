@@ -31,6 +31,7 @@ typedef struct TestPair
 RG_ARRAY_DEFINE(int, IntArray);
 RG_ARRAY_DEFINE(TestPair, PairArray);
 RG_SMALLVEC_DEFINE(int, IntSmallVec, 4);
+RG_SMALLVEC_DEFINE(TestPair, PairSmallVec, 2);
 RG_RING_DEFINE(int, IntRing);
 RG_SPARSE_SET_DEFINE(uint32_t, EntitySet);
 RG_SPARSE_SET_DEFINE(int32_t, SignedEntitySet);
@@ -151,6 +152,54 @@ static void test_smallvec(void)
 	CHECK(!rg_smallvec_is_inline(&vec));
 	rg_smallvec_free(&vec);
 	CHECK(vec.data == NULL && vec.len == 0 && vec.cap == 0 && vec.arena == NULL);
+}
+
+static void test_push_self_reference(void)
+{
+	rg_arena_reset(&arena);
+	IntArray arr;
+	rg_array_init(&arr, &arena);
+	rg_array_push(int, &arr, 37);
+	rg_array_push(int, &arr, arr.data[arr.len - 1]);
+	CHECK(arr.len == 2 && arr.data[1] == 37);
+	while (arr.len < arr.cap)
+		rg_array_push(int, &arr, *rg_array_back(&arr));
+	size_t old_cap = arr.cap;
+	rg_array_push(int, &arr, arr.data[arr.len - 1]);
+	CHECK(arr.cap > old_cap && *rg_array_back(&arr) == 37);
+	int evaluations = 0;
+	rg_array_push(int, &arr, (++evaluations, *rg_array_back(&arr)));
+	CHECK(evaluations == 1 && *rg_array_back(&arr) == 37);
+
+	IntSmallVec vec;
+	rg_smallvec_init(&vec, &arena);
+	rg_smallvec_push(int, &vec, 51);
+	rg_smallvec_push(int, &vec, vec.data[vec.len - 1]);
+	CHECK(vec.len == 2 && vec.data[1] == 51);
+	while (vec.len < vec.cap)
+		rg_smallvec_push(int, &vec, *rg_smallvec_back(&vec));
+	rg_smallvec_push(int, &vec, vec.data[vec.len - 1]);
+	CHECK(!rg_smallvec_is_inline(&vec) && *rg_smallvec_back(&vec) == 51);
+	evaluations = 0;
+	rg_smallvec_push(int, &vec, (++evaluations, *rg_smallvec_back(&vec)));
+	CHECK(evaluations == 1 && *rg_smallvec_back(&vec) == 51);
+
+	PairArray pairs;
+	rg_array_init(&pairs, &arena);
+	TestPair pair = {123, 456};
+	rg_array_push(TestPair, &pairs, pair);
+	while (pairs.len < pairs.cap)
+		rg_array_push(TestPair, &pairs, *rg_array_back(&pairs));
+	rg_array_push(TestPair, &pairs, pairs.data[pairs.len - 1]);
+	CHECK(rg_array_back(&pairs)->first == 123 && rg_array_back(&pairs)->second == 456);
+
+	PairSmallVec small_pairs;
+	rg_smallvec_init(&small_pairs, &arena);
+	rg_smallvec_push(TestPair, &small_pairs, pair);
+	rg_smallvec_push(TestPair, &small_pairs, *rg_smallvec_back(&small_pairs));
+	rg_smallvec_push(TestPair, &small_pairs, small_pairs.data[small_pairs.len - 1]);
+	CHECK(!rg_smallvec_is_inline(&small_pairs));
+	CHECK(rg_smallvec_back(&small_pairs)->first == 123 && rg_smallvec_back(&small_pairs)->second == 456);
 }
 
 static void test_ring(void)
@@ -324,6 +373,7 @@ int main(void)
 	test_capacity_helpers();
 	test_array();
 	test_smallvec();
+	test_push_self_reference();
 	test_ring();
 	test_sparse_set();
 	test_allocation_failure();

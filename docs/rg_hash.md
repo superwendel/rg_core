@@ -114,6 +114,10 @@ Set operations:
 `rg_hash_set_try_insert` returns `1` for a new key, `0` when the key already
 exists, and `-1` for allocation failure.
 
+Updating an existing map key or inserting an existing set key does not allocate,
+including when the table is at its growth threshold. If allocation for a new key
+fails, existing entries remain unchanged.
+
 ## Arena ownership and pointer lifetime
 
 Growing a table allocates a replacement array from its arena. The old array is
@@ -148,8 +152,9 @@ so custom hash functions may still return zero.
 
 ## Performance
 
-For 500,000 reserved integer-key entries, insertion completed in 25.81 ms
-versus 79.91 ms for `std::unordered_map`; removal completed in 25.97 ms versus
+In earlier measurements of 500,000 reserved integer-key entries, insertion
+completed in 25.81 ms versus 79.91 ms for `std::unordered_map`;
+removal completed in 25.97 ms versus
 78.30 ms. See the [core benchmark report](benchmarks/rg_core.md#rg_hash) for
 `stb_ds` results, methodology, and allocation details.
 

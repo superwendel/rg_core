@@ -1,5 +1,9 @@
 // rg_sprintf public API correctness tests
 
+#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE 1
+#endif
+
 #if defined(RG_SPRINTF_TEST_HYBRID)
 #include "../src/rg_sprintf_hybrid.h"
 #elif defined(RG_SPRINTF_TEST_ASM)
@@ -9,9 +13,23 @@
 #endif
 
 #include <limits.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#elif defined(__linux__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+#endif
 
 static int tests_run;
 static int tests_failed;
@@ -109,6 +127,97 @@ static void test_width_precision_and_flags(void)
 	CHECK_LIBC("%*.*f", 9, 3, 1.25);
 }
 
+static void check_string_output_modes(const char* format, ...)
+{
+	char expected[2048];
+	char guarded[2050];
+	CallbackBuffer capture = {{0}, 0, 0};
+	va_list args;
+	va_list copy;
+	va_start(args, format);
+	va_copy(copy, args);
+	int expected_count = vsnprintf(expected, sizeof(expected), format, copy);
+	va_end(copy);
+	CHECK(expected_count >= 0 && (size_t)expected_count < sizeof(expected));
+	if (expected_count < 0 || (size_t)expected_count >= sizeof(expected))
+	{
+		va_end(args);
+		return;
+	}
+
+	memset(guarded, 'Z', sizeof(guarded));
+	va_copy(copy, args);
+	CHECK(rg_vsprintf(guarded + 1, format, copy) == expected_count);
+	va_end(copy);
+	CHECK(memcmp(guarded + 1, expected, (size_t)expected_count + 1) == 0);
+	CHECK(guarded[0] == 'Z' && guarded[expected_count + 2] == 'Z');
+
+	// Truncate in literals, leading padding, string data, and trailing padding.
+	const size_t capacities[] = {0, 1, 7, 10, 11, 15, 16, 17, 32,
+	                             (size_t)expected_count, (size_t)expected_count + 1};
+	for (size_t i = 0; i < sizeof(capacities) / sizeof(capacities[0]); ++i)
+	{
+		size_t capacity = capacities[i];
+		memset(guarded, 'Z', sizeof(guarded));
+		va_copy(copy, args);
+		CHECK(rg_vsnprintf(guarded + 1, capacity, format, copy) == expected_count);
+		va_end(copy);
+		CHECK(guarded[0] == 'Z' && guarded[capacity + 1] == 'Z');
+		if (capacity != 0)
+		{
+			size_t copied = (size_t)expected_count < capacity - 1 ? (size_t)expected_count : capacity - 1;
+			CHECK(memcmp(guarded + 1, expected, copied) == 0);
+			CHECK(guarded[copied + 1] == '\0');
+		}
+	}
+	va_copy(copy, args);
+	CHECK(rg_vsnprintf(NULL, 0, format, copy) == expected_count);
+	va_end(copy);
+	va_copy(copy, args);
+	CHECK(rg_vsprintf_cb(capture_callback, &capture, format, copy) == expected_count);
+	va_end(copy);
+	CHECK(capture.len == (size_t)expected_count);
+	CHECK(memcmp(capture.data, expected, (size_t)expected_count + 1) == 0);
+	if (expected_count > 0) CHECK(capture.calls > 0);
+	va_end(args);
+}
+
+static void test_general_string_widths(void)
+{
+	static const size_t lengths[] = {0, 1, 7, 8, 9, 10, 11, 15, 16, 17, 31, 32, 33};
+	static const int widths[] = {0, 7, 10, 16, 24, 40};
+	static const int precisions[] = {0, 4, 9, 10, 15, 16, 17, 32};
+	char text[34];
+	for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i)
+	{
+		for (size_t j = 0; j < lengths[i]; ++j) text[j] = (char)('a' + j % 26);
+		text[lengths[i]] = '\0';
+		int width = widths[i % (sizeof(widths) / sizeof(widths[0]))];
+		int precision = precisions[i % (sizeof(precisions) / sizeof(precisions[0]))];
+		CHECK_LIBC("%10s", text);
+		CHECK_LIBC("%-10s", text);
+		CHECK_LIBC("prefix[%24s]suffix", text);
+		CHECK_LIBC("prefix[%-24s]suffix", text);
+		CHECK_LIBC("%*s", width, text);
+		CHECK_LIBC("%*s", -width, text);
+		check_string_output_modes("label[%*s]tail", width, text);
+		check_string_output_modes("label[%*s]tail", -width, text);
+		check_string_output_modes("label[%*.*s]tail", width, precision, text);
+		check_string_output_modes("label[%*.*s]tail", -width, precision, text);
+	}
+
+	// A short value can still cross callback chunks through its field padding.
+	check_string_output_modes("begin[%*s]end", 513, "hero");
+	check_string_output_modes("begin[%*s]end", -513, "hero");
+	char payload[514];
+	for (size_t length = 511; length <= 513; ++length)
+	{
+		memset(payload, 'q', length);
+		payload[length] = '\0';
+		check_string_output_modes("tag:%s:end", payload);
+	}
+}
+
 static void test_integer_limits(void)
 {
 	CHECK_LIBC("%d", INT_MIN);
@@ -145,6 +254,76 @@ static void test_snprintf_bounds(void)
 
 	count = rg_snprintf(NULL, 0, "value=%d", 1234);
 	CHECK(count == 10);
+}
+
+static void check_string_slice(const char* slice)
+{
+	char buffer[16];
+	CallbackBuffer capture = {{0}, 0, 0};
+	CHECK_FORMAT("abcd", "%.4s", slice);
+	CHECK_FORMAT("abcd", "%.*s", 4, slice);
+	CHECK_LIBC("%*.*s", 8, 4, slice);
+	CHECK_LIBC("%*.*s", -8, 4, slice);
+	CHECK(rg_snprintf(buffer, 3, "%.*s", 4, slice) == 4);
+	CHECK(strcmp(buffer, "ab") == 0);
+	CHECK(rg_snprintf(NULL, 0, "%.*s", 4, slice) == 4);
+	CHECK(rg_sprintf_cb(capture_callback, &capture, "prefix:%.4s:%d", slice, 42) == 14);
+	CHECK(strcmp(capture.data, "prefix:abcd:42") == 0);
+	CHECK(capture.len == 14);
+}
+
+static void test_string_precision(void)
+{
+	const char slice[4] = {'a', 'b', 'c', 'd'};
+	const char embedded[4] = {'a', '\0', 'b', 'c'};
+	check_string_slice(slice);
+	CHECK_FORMAT("a", "%.*s", 4, embedded);
+	CHECK_FORMAT("", "%.0s", slice);
+	CHECK_LIBC("%.*s", -1, "complete");
+	CHECK_LIBC("%.*s", 32, "short");
+	CHECK_FORMAT("(nu", "%.3s", (char*)NULL);
+}
+
+static void test_string_precision_guard_page(void)
+{
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
+	size_t page_size;
+	char* pages;
+#if defined(_WIN32)
+	SYSTEM_INFO info;
+	DWORD old_protection;
+	GetSystemInfo(&info);
+	page_size = (size_t)info.dwPageSize;
+	pages = (char*)VirtualAlloc(NULL, page_size * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	CHECK(pages != NULL);
+	if (pages == NULL) return;
+	int protected_page = VirtualProtect(pages + page_size, page_size, PAGE_NOACCESS, &old_protection) != 0;
+#else
+	long system_page_size = sysconf(_SC_PAGESIZE);
+	CHECK(system_page_size > 0);
+	if (system_page_size <= 0) return;
+	page_size = (size_t)system_page_size;
+	pages = (char*)mmap(NULL, page_size * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	CHECK(pages != MAP_FAILED);
+	if (pages == MAP_FAILED) return;
+	int protected_page = mprotect(pages + page_size, page_size, PROT_NONE) == 0;
+#endif
+	CHECK(protected_page);
+	if (protected_page)
+	{
+		char* slice = pages + page_size - 4;
+		memcpy(slice, "abcd", 4);
+		check_string_slice(slice);
+		// Zero precision must not access even the first source byte.
+		CHECK_FORMAT("", "%.0s", pages + page_size);
+		CHECK(rg_snprintf(NULL, 0, "%.*s", 0, pages + page_size) == 0);
+	}
+#if defined(_WIN32)
+	CHECK(VirtualFree(pages, 0, MEM_RELEASE) != 0);
+#else
+	CHECK(munmap(pages, page_size * 2) == 0);
+#endif
+#endif
 }
 
 static void test_direct_conversions(void)
@@ -265,9 +444,12 @@ int main(void)
 {
 	test_basic_formatting();
 	test_width_precision_and_flags();
+	test_general_string_widths();
 	test_integer_limits();
 	test_floating_point();
 	test_snprintf_bounds();
+	test_string_precision();
+	test_string_precision_guard_page();
 	test_direct_conversions();
 	test_hex_conversion();
 	test_callback_output();

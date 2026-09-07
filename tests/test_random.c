@@ -167,6 +167,70 @@ static void test_bounded_golden_sequences(void)
 	CHECK(memcmp(&rng, &unchanged, sizeof(rng)) == 0);
 }
 
+// Previous bounded algorithm: checks every product against the rejection
+// threshold. Keep it here to verify both results and sequence consumption.
+static u32 reference_bounded_u32(RgRng* rng, u32 bound)
+{
+	if (bound == 0)
+		return 0;
+	u32 threshold = (u32)(0u - bound) % bound;
+	for (;;)
+	{
+		u64 product = (u64)rg_rng_next_u32(rng) * bound;
+		if ((u32)product >= threshold)
+			return (u32)(product >> 32);
+	}
+}
+
+static u64 reference_bounded_u64(RgRng* rng, u64 bound)
+{
+	if (bound == 0)
+		return 0;
+	u64 threshold = (u64)(0ULL - bound) % bound;
+	for (;;)
+	{
+		u64 low;
+		u64 high = rg_random_mul_u64_wide(rg_rng_next_u64(rng), bound, &low);
+		if (low >= threshold)
+			return high;
+	}
+}
+
+static void test_bounded_sequence_compatibility(void)
+{
+	const u64 bounds[] = {
+		0, 1, 2, 3, 10, 1023, 1024, 1025, UINT32_MAX,
+		UINT64_C(0x80000001), UINT64_C(0x100000001),
+		UINT64_C(0x7fffffffffffffff), UINT64_C(0x8000000000000000),
+		UINT64_C(0x8000000000000001), UINT64_MAX - 1, UINT64_MAX
+	};
+	RgRng current, reference, bounds_rng;
+	rg_rng_seed(&current, 1234);
+	reference = current;
+	rg_rng_seed(&bounds_rng, 5678);
+	for (size_t i = 0; i < 40000; ++i)
+	{
+		u64 bound = i < 20000 ? bounds[i % RG_ARRAY_COUNT(bounds)] : rg_rng_next_u64(&bounds_rng);
+		CHECK(rg_random_bounded_u64(&current, bound) == reference_bounded_u64(&reference, bound));
+		CHECK(memcmp(current.state, reference.state, sizeof(current.state)) == 0);
+		CHECK(rg_random_bounded_u32(&current, (u32)bound) == reference_bounded_u32(&reference, (u32)bound));
+		CHECK(memcmp(current.state, reference.state, sizeof(current.state)) == 0);
+	}
+
+	// A zero output at the start forces rejection for either width at 2^(w-1)+1.
+	const u64 reject_state[4] = {1, 0, 2, 3};
+	rg_rng_seed_state(&current, reject_state);
+	reference = current;
+	CHECK(rg_random_bounded_u64(&current, UINT64_C(0x8000000000000001)) ==
+	      reference_bounded_u64(&reference, UINT64_C(0x8000000000000001)));
+	CHECK(memcmp(current.state, reference.state, sizeof(current.state)) == 0);
+	rg_rng_seed_state(&current, reject_state);
+	reference = current;
+	CHECK(rg_random_bounded_u32(&current, UINT32_C(0x80000001)) ==
+	      reference_bounded_u32(&reference, UINT32_C(0x80000001)));
+	CHECK(memcmp(current.state, reference.state, sizeof(current.state)) == 0);
+}
+
 static void test_uniform_ranges(void)
 {
 	RgRng rng;
@@ -250,6 +314,60 @@ static void test_shuffle_and_fill(void)
 	CHECK(memcmp(&rng, &unchanged, sizeof(rng)) == 0);
 }
 
+static void test_shuffle_sequence_compatibility(void)
+{
+	const size_t counts[] = {0, 1, 2, 3, 16, 31, 257};
+	const size_t strides[] = {0, 1, 3, 4, 16, 31};
+	const u64 seeds[] = {0, 1, UINT64_MAX};
+	const u64 reject_state[4] = {1, 0, 2, 3};
+	u8 current_data[257 * 31];
+	u8 reference_data[257 * 31];
+	u8 temporary[31];
+	for (size_t seed = 0; seed <= RG_ARRAY_COUNT(seeds); ++seed)
+	{
+		for (size_t c = 0; c < RG_ARRAY_COUNT(counts); ++c)
+		{
+			for (size_t s = 0; s < RG_ARRAY_COUNT(strides); ++s)
+			{
+				size_t count = counts[c];
+				size_t stride = strides[s];
+				RgRng current, reference;
+				if (seed < RG_ARRAY_COUNT(seeds))
+					rg_rng_seed(&current, seeds[seed]);
+				else
+					rg_rng_seed_state(&current, reject_state);
+				current.has_spare = 1;
+				current.spare = 0.25f;
+				reference = current;
+				for (size_t i = 0; i < sizeof(current_data); ++i)
+					current_data[i] = (u8)(i * 37 + i / 31);
+				memcpy(reference_data, current_data, sizeof(current_data));
+				for (size_t round = 0; round < 2; ++round)
+				{
+					rg_random_shuffle(current_data, count, stride, &current);
+					if (count > 1 && stride > 0)
+					{
+						for (size_t remaining = count; remaining > 1; --remaining)
+						{
+							size_t chosen = (size_t)reference_bounded_u64(&reference, (u64)remaining);
+							if (chosen == remaining - 1)
+								continue;
+							u8* last = reference_data + (remaining - 1) * stride;
+							u8* other = reference_data + chosen * stride;
+							memcpy(temporary, last, stride);
+							memcpy(last, other, stride);
+							memcpy(other, temporary, stride);
+						}
+					}
+					CHECK(memcmp(current_data, reference_data, sizeof(current_data)) == 0);
+					CHECK(memcmp(current.state, reference.state, sizeof(current.state)) == 0);
+					CHECK(current.has_spare == reference.has_spare && current.spare == reference.spare);
+				}
+			}
+		}
+	}
+}
+
 static void test_boolean_helpers(void)
 {
 	RgRng rng;
@@ -317,8 +435,10 @@ int main(void)
 	test_seed_and_golden_sequence();
 	test_wide_multiply();
 	test_bounded_golden_sequences();
+	test_bounded_sequence_compatibility();
 	test_uniform_ranges();
 	test_shuffle_and_fill();
+	test_shuffle_sequence_compatibility();
 	test_boolean_helpers();
 	test_distributions();
 

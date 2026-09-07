@@ -138,13 +138,12 @@ build configurations.
 
 ## Performance
 
-The public-release pass reduced `RgProfEvent` from 40 bytes to 32 bytes on x64
-by moving frame numbering into the optional history. A default registered
-thread therefore uses 512 KiB for events instead of 640 KiB. Thread state is
-cache-line isolated, and event storage is pre-touched during registration.
+`RgProfEvent` occupies 32 bytes on x64, with frame numbering stored in the
+optional history. A default registered thread uses 512 KiB for events. Thread
+state is cache-line isolated, and event storage is pre-touched during registration.
 
-Seven fresh-process runs of the optimized MSVC x64 lab benchmark produced
-these representative medians:
+Seven fresh-process runs of the optimized MSVC x64 benchmark produced
+these historical representative medians:
 
 | Operation | Median time |
 | --- | ---: |
@@ -166,6 +165,13 @@ same event recorder with adjacent 48-byte worker states and demonstrates the
 false-sharing cost that the cache-line slots avoid.
 
 These are microbenchmarks, not guarantees. Timer latency and scheduling vary
-by processor and operating system; the important result is that the richer
-event path did not regress from the lab version and remains slightly faster
-than the fixed-section path in the same executable.
+by processor and operating system. In those historical runs, the richer event
+path was slightly faster than the fixed-section path in the same executable.
+
+The benchmark source is `benchmarks/bench_prof.c`; run it with
+`build.bat bench_prof`. It emits warmup/seven-sample cases for the timer,
+recording, fixed-section/frame baselines, history, and worker layouts. It
+consumes recorded outputs outside timing and synchronizes worker readiness
+before starting their timer. Report current measurements separately from the
+historical table. See the
+[benchmark guide](benchmarks/README.md) for paired comparisons.

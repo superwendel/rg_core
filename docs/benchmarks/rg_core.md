@@ -1,8 +1,7 @@
 # rg_core benchmark results
 
-These benchmarks exercise the public `rg_algo`, `rg_hash`, and
-`rg_containers` headers. They were adapted from the original `rg-core-lab`
-harnesses and rerun against the source in this repository.
+These historical benchmarks exercise the public `rg_algo`, `rg_hash`, and
+`rg_containers` headers.
 
 Values are the median of three process runs. Within each process, the
 benchmark thread is pinned to one logical CPU, each case receives one warmup,
@@ -12,7 +11,7 @@ better.
 All implementations in a benchmark are built into the same C++17 executable
 with MSVC 19.44.35217 for x64 using `/O2 /Ob3 /Oi /Ot /Oy /GL /arch:AVX2
 /fp:fast /GS- /DNDEBUG`. Measurements were taken on an AMD Ryzen 9
-4900HS on Windows build 26200.9168 on August 27, 2026.
+4900HS on Windows build 26200.9168.
 
 ## rg_algo
 
@@ -116,8 +115,8 @@ speedup claim.
 
 ## Reproducing the benchmarks
 
-From a Visual Studio Developer Command Prompt, reproduce the documented
-three-process outer medians with:
+From a Visual Studio Developer Command Prompt, run these three suites using
+the same three-process-median methodology:
 
 ```bat
 build.bat bench_median

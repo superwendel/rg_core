@@ -519,11 +519,17 @@ RGINLINE void rg_plane_project_point(const rg_plane* plane, const rg_vec3* p, rg
 // =============================================================================
 
 /**
- * @brief Extract frustum planes from a matrix (left, right, bottom, top, near, far)
+ * @brief Extract normalized frustum planes using RG_MATH_CLIP_CONTROL depth
  * @param m Matrix (view-projection or similar)
- * @param out Output frustum
+ * @param out Output planes in left, right, bottom, top, near, far order
  */
 RGINLINE void rg_frustum_from_mat4(const rg_mat4* m, rg_frustum* out);
+
+/** @brief Extract normalized planes for an NDC depth range of [-1, 1]. */
+RGINLINE void rg_frustum_from_mat4_no(const rg_mat4* m, rg_frustum* out);
+
+/** @brief Extract normalized planes for an NDC depth range of [0, 1]. */
+RGINLINE void rg_frustum_from_mat4_zo(const rg_mat4* m, rg_frustum* out);
 
 /**
  * @brief AABB frustum culling test
@@ -1374,7 +1380,8 @@ RGINLINE void rg_plane_project_point(const rg_plane* plane, const rg_vec3* p, rg
 	out->z = p->z - dist * nz;
 }
 
-RGINLINE void rg_frustum_from_mat4(const rg_mat4* m, rg_frustum* out)
+// The public wrappers pass a constant depth mode; inlining removes this branch.
+RGINLINE void rg__frustum_from_mat4(const rg_mat4* m, rg_frustum* out, int zero_to_one)
 {
 	const f32* a = m->m;
 	rg_plane* planes = out->planes;
@@ -1414,11 +1421,37 @@ RGINLINE void rg_frustum_from_mat4(const rg_mat4* m, rg_frustum* out)
 	RG_FRUSTUM_SET_NORMALIZED(RG_FRUSTUM_RIGHT, a[3] - a[0], a[7] - a[4], a[11] - a[8], a[15] - a[12]);
 	RG_FRUSTUM_SET_NORMALIZED(RG_FRUSTUM_BOTTOM, a[3] + a[1], a[7] + a[5], a[11] + a[9], a[15] + a[13]);
 	RG_FRUSTUM_SET_NORMALIZED(RG_FRUSTUM_TOP, a[3] - a[1], a[7] - a[5], a[11] - a[9], a[15] - a[13]);
-	RG_FRUSTUM_SET_NORMALIZED(RG_FRUSTUM_NEAR, a[3] + a[2], a[7] + a[6], a[11] + a[10], a[15] + a[14]);
+	if (zero_to_one)
+	{
+		RG_FRUSTUM_SET_NORMALIZED(RG_FRUSTUM_NEAR, a[2], a[6], a[10], a[14]);
+	}
+	else
+	{
+		RG_FRUSTUM_SET_NORMALIZED(RG_FRUSTUM_NEAR, a[3] + a[2], a[7] + a[6], a[11] + a[10], a[15] + a[14]);
+	}
 	RG_FRUSTUM_SET_NORMALIZED(RG_FRUSTUM_FAR, a[3] - a[2], a[7] - a[6], a[11] - a[10], a[15] - a[14]);
 
 #undef RG_FRUSTUM_SET_NORMALIZED
 #undef RG_FRUSTUM_INV_LEN
+}
+
+RGINLINE void rg_frustum_from_mat4_no(const rg_mat4* m, rg_frustum* out)
+{
+	rg__frustum_from_mat4(m, out, 0);
+}
+
+RGINLINE void rg_frustum_from_mat4_zo(const rg_mat4* m, rg_frustum* out)
+{
+	rg__frustum_from_mat4(m, out, 1);
+}
+
+RGINLINE void rg_frustum_from_mat4(const rg_mat4* m, rg_frustum* out)
+{
+#if (RG_MATH_CLIP_CONTROL & RG_MATH_CLIP_CONTROL_ZO_BIT)
+	rg_frustum_from_mat4_zo(m, out);
+#else
+	rg_frustum_from_mat4_no(m, out);
+#endif
 }
 
 RGINLINE int rg_aabb_in_frustum(const rg_aabb* aabb, const rg_frustum* frustum)

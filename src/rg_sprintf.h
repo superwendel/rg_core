@@ -14,7 +14,8 @@
 //
 // Author: Steven Wendel (superwendel)
 
-#ifndef RG_SPRINTF_H
+// The first formatter implementation included owns this translation unit.
+#if !defined(RG_SPRINTF_H) && !defined(RG_SPRINTF_ASM_H)
 #define RG_SPRINTF_H
 
 #include "rg_defs.h"
@@ -904,6 +905,32 @@ RGINLINE size_t rg_strlen(const char* s)
 
 	// Find exact position of null
 	while (*s) s++;
+	return (size_t)(s - start);
+}
+
+// Keep bounded scanning out of the main formatter's register allocation.
+// Sequential byte checks stop at the terminator without requiring padded input.
+static RG_NOINLINE size_t rg_sprintf_bounded_len(const char* s, size_t remaining)
+{
+	const char* start = s;
+	while (remaining >= 8)
+	{
+		if (s[0] == '\0') return (size_t)(s - start);
+		if (s[1] == '\0') return (size_t)(s - start) + 1;
+		if (s[2] == '\0') return (size_t)(s - start) + 2;
+		if (s[3] == '\0') return (size_t)(s - start) + 3;
+		if (s[4] == '\0') return (size_t)(s - start) + 4;
+		if (s[5] == '\0') return (size_t)(s - start) + 5;
+		if (s[6] == '\0') return (size_t)(s - start) + 6;
+		if (s[7] == '\0') return (size_t)(s - start) + 7;
+		s += 8;
+		remaining -= 8;
+	}
+	while (remaining > 0 && *s != '\0')
+	{
+		s++;
+		remaining--;
+	}
 	return (size_t)(s - start);
 }
 
@@ -2013,11 +2040,10 @@ static int rg_vsnprintf_internal(rg_sprintf_ctx* ctx, const char* fmt, va_list a
 				}
 
 				// Slow path with width/precision
-				str_len = strlen(str);
-				if (precision >= 0 && str_len > (size_t)precision)
-				{
-					str_len = precision;
-				}
+				if (precision >= 0)
+					str_len = rg_sprintf_bounded_len(str, (size_t)precision);
+				else
+					str_len = strlen(str);
 				goto output_string;
 			}
 

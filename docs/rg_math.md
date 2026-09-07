@@ -21,8 +21,9 @@ rg_vec3_add(&position, &velocity, &next);
 ```
 
 All functions have internal linkage, so there is no implementation macro or
-separate library to link. The headers use the `f32`, `f64`, and fixed-width
-integer aliases from `rg_defs.h`.
+separately compiled `rg_math` library. Debug printing uses the formatter backend
+described below. The headers use the `f32`, `f64`, and fixed-width integer
+aliases from `rg_defs.h`.
 
 ## Modules
 
@@ -76,9 +77,20 @@ Other architectures use the scalar implementation. Define
 #include "rg_math.h"
 ```
 
-SIMD vector, quaternion, and matrix types are 16-byte aligned. The explicitly
-named `*_fast` matrix functions may impose stronger alignment or input
-preconditions; see their declarations before using them with external storage.
+`rg_vec3`, `rg_vec4`, `rg_quat`, and `rg_mat4` are 16-byte aligned.
+`rg_mat4_mul4_aligned32` requires every input and the output to be **32-byte
+aligned**. Use `rg_mat4_mul4` with ordinary `rg_mat4` storage:
+
+```c
+RG_ALIGN32 rg_mat4 chain[4];
+RG_ALIGN32 rg_mat4 product;
+/* Initialize all four matrices before multiplying. */
+rg_mat4_mul4_aligned32(&chain[0], &chain[1], &chain[2], &chain[3], &product);
+```
+
+When allocating this storage dynamically, request 32-byte alignment from the
+allocator. Aligning a pointer variable does not align the memory it points to.
+Both four-matrix multiplication functions allow the output to alias any input.
 
 ## Performance and safety modes
 
@@ -120,7 +132,11 @@ produce a compile-time error.
 
 ## Coordinate conventions
 
-Matrices are column-major. Projection helpers default to right-handed clip
+Matrices are column-major and multiply column vectors: `out = matrix * vector`.
+In `a * b`, the transform `b` acts first. Quaternions store `(x, y, z, w)` and
+rotation angles are radians. View matrices map the camera eye to the origin
+and forward to negative Z for right-handed cameras or positive Z for
+left-handed cameras. Projection helpers default to right-handed clip
 space with an NDC depth range of `[-1, 1]`:
 
 ```c
@@ -145,6 +161,26 @@ rg_mat4_perspective(RG_PI / 3.0f, 16.0f / 9.0f, 0.1f, 1000.0f,
                     &projection);
 ```
 
+`rg_frustum_from_mat4` uses the configured depth range when extracting planes
+from a view-projection matrix. Use `rg_frustum_from_mat4_no` for `[-1, 1]` or
+`rg_frustum_from_mat4_zo` for `[0, 1]` when the projection was built with an
+explicit variant. These plane extractors support either handedness.
+
+## Transform preconditions
+
+- `rg_mat4_inv_tr` inverts orthonormal rotation plus translation. Its last row
+  must be `[0, 0, 0, 1]`; scale and shear require `rg_mat4_inv_affine` instead.
+  Both inverse functions support `out == input`.
+- Matrix-to-quaternion conversion expects an orthonormal rotation matrix in
+  max-performance mode. Use `rg_mat4_decompose` or `rg_mat4_decompose_fast` for
+  a translation/rotation/scale matrix with nonzero scales and no shear. A
+  decomposition may choose different signed scales and an equivalent rotation;
+  recomposition preserves the original transform.
+- Quaternion rotation/interpolation and quaternion-to-matrix conversion expect
+  unit quaternions in max-performance mode. Axis-angle construction expects a
+  unit axis. `rg_quat_from_vecs` expects two unit vectors;
+  `rg_quat_from_norm_pair_fast` additionally excludes antiparallel vectors.
+
 ## Debug printing
 
 `rg_math_io.h` supplies print helpers for math and geometry types. Printing is
@@ -156,7 +192,58 @@ When printing is enabled, `rg_math_io.h` uses `rg_sprintf_hybrid.h`. Define
 `RG_MATH_IO_NO_SPRINTF_INCLUDE` only when a compatible `rg_sprintf` API was
 already included earlier in the translation unit.
 
+On MSVC x64 AVX2 builds, the hybrid formatter selects its ASM backend by
+default. Link the helper described in [formatter integration](rg_sprintf.md#integration),
+or define `RG_SPRINTF_NO_ASM` before the first formatter-related include to use
+portable C for debug printing.
+
 ## Performance
+
+The runnable [math benchmark](../benchmarks/bench_math.cpp) covers all 15
+operations in the weighted profile below, plus camera construction, quaternion
+extraction, decomposition, frustum extraction, inverse transforms, and aligned
+four-matrix multiplication:
+
+```bat
+build.bat bench_math
+.bench-build\current\bench_math.exe quat_from_mat
+```
+
+The optional argument filters case names by substring. Each case runs one
+warmup and seven samples, reporting `BENCH name sample_index ns_per_op checksum`.
+Samples process batches of 8,192 varying inputs until at least 20 milliseconds
+of computation have been measured. Preparation and full-output consumption
+are outside each timed batch. The consumer is compiled separately without
+whole-program optimization so every result remains observable. Reported times
+include array loads/stores and loop overhead; the libraries use their native
+vector and matrix layouts.
+
+The harness uses C++17 for comparison with C++ math libraries; the supported
+library interface is C. The standalone harness needs no comparison dependencies.
+With the supplied build command, enable optional comparisons through environment
+variables:
+
+```bat
+set RG_BENCH_DEPS=C:\path\to\benchmark-dependencies
+set RG_BENCH_DIRECTXMATH=1
+build.bat bench_math
+```
+
+The builder enables cglm when `RG_BENCH_DEPS` contains
+`cglm/include/cglm/cglm.h`, and GLM when it contains `glm/glm.hpp`.
+`RG_BENCH_DIRECTXMATH=1` enables DirectXMath from the installed Windows SDK.
+Each enabled library adds the same 15 profile operations.
+
+For custom builds, the corresponding definitions are `RG_BENCH_CGLM`,
+`RG_BENCH_DIRECTXMATH`, and `RG_BENCH_GLM`; provide the cglm `include` directory,
+the Windows SDK, or the directory containing `glm/` on the include path.
+All use the same inputs and timing protocol; the default library normalization
+precision is retained. These comparisons therefore include each library's
+precision/safety tradeoffs.
+
+The following charts and tables are **historical results**.
+Use the runnable harness for comparisons of current builds; its batch methodology
+differs from the historical measurements, which do not establish current performance.
 
 ![rg_math hot-path benchmark results](benchmarks/rg_math-hot-path.svg)
 
@@ -199,7 +286,7 @@ every operation are shown:
 | [cglm 0.9.6](https://github.com/recp/cglm) | 1.50 ms | 100% |
 | [GLM 1.1.0](https://github.com/g-truc/glm) | 3.65 ms | 100% |
 
-The current public headers and all comparison libraries were built into the
+The then-current public headers and all comparison libraries were built into the
 same C++17 benchmark executable with MSVC 19.44.35217 for x64 using `/O2 /Ob3
 /Oi /Ot /Oy /GL /LTCG /arch:AVX2 /fp:fast /GS- /DNDEBUG`. The default
 `RG_MATH_MAX_PERF=1`, `RG_MATH_USE_LIBC=1`, and `RG_MATH_LIBC_ALIASES=1`
@@ -208,10 +295,7 @@ figure reports the median of seven runs after a 10,000-call warmup per
 operation.
 
 Measurements were taken on an AMD Ryzen 9 4900HS on Windows build 26200.9168.
-HandmadeMath is not shown because the development harness intentionally
-configures it without SIMD. The development harness and comparison-library
-sources are not distributed in this repository. Results are machine-specific
-and should not be treated as a performance guarantee.
+Results are machine-specific and should not be treated as a performance guarantee.
 
 ## Build verification
 
@@ -221,7 +305,9 @@ From a Visual Studio Developer Command Prompt:
 build.bat test_math
 ```
 
-The target checks baseline x64 SIMD, AVX2, checked SIMD and scalar,
-plain-layout, C++17, and reduced-umbrella configurations. Tests exercise
-representative functionality from every module. Published benchmark results
-are documentation artifacts and are not part of the test target.
+The target checks C builds with baseline x64 SIMD, AVX2, checked SIMD and scalar,
+plain-layout, reduced-umbrella, and all four clip-space configurations.
+Tests cover camera-space invariants, quaternion/matrix and signed-TRS round
+trips, asymmetric projection corners, frustum culling, and inverse/multiply
+aliasing and alignment contracts, along with representative functionality from
+every module. Benchmarks run separately from correctness tests.

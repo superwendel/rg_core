@@ -62,6 +62,12 @@ u64 rg_random_bounded_u64(RgRng* rng, u64 bound);
 The bounded functions sample without modulo bias and return values in
 `[0, bound)`. A zero bound returns zero without consuming RNG state.
 
+Bounded sampling skips the rejection-threshold division when the first product
+already proves that the sample is acceptable. Bounds above half the unsigned
+range also avoid division because the negated bound is already the remainder.
+This preserves the generated sequence and RNG state advancement, including
+draws rejected for large bounds.
+
 Integer ranges are inclusive at both ends:
 
 ```c
@@ -91,6 +97,8 @@ int rg_random_sign(RgRng* rng);
 void rg_random_shuffle(void* data, size_t count, size_t stride, RgRng* rng);
 void rg_random_fill_bytes(void* data, size_t size, RgRng* rng);
 ```
+
+Shuffle retains its original 64-bit sampling sequence and RNG state advancement.
 
 ## Distributions
 

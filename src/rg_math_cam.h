@@ -191,16 +191,16 @@ RGINLINE void rg_mat4_frustum_rh_zo(f32 left, f32 right, f32 bottom, f32 top,
 RGINLINE void rg_mat4_frustum_lh_no(f32 left, f32 right, f32 bottom, f32 top,
                                     f32 near_z, f32 far_z, rg_mat4* out)
 {
-	f32 rl = 1.0f / (right - left);
-	f32 tb = 1.0f / (top - bottom);
-	f32 fn = -1.0f / (far_z - near_z);
-	f32 nv = 2.0f * near_z;
+	f32 rl = -1.0f / (right - left);
+	f32 tb = -1.0f / (top - bottom);
+	f32 fn = 1.0f / (far_z - near_z);
+	f32 nv = -2.0f * near_z;
 
 #if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
 	_mm_store_ps(&out->m[0], _mm_setr_ps(nv * rl, 0.0f, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[4], _mm_setr_ps(0.0f, nv * tb, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[8], _mm_setr_ps((right + left) * rl, (top + bottom) * tb,
-	                                     -(far_z + near_z) * fn, 1.0f));
+	                                     (far_z + near_z) * fn, 1.0f));
 	_mm_store_ps(&out->m[12], _mm_setr_ps(0.0f, 0.0f, far_z * nv * fn, 0.0f));
 #else
 	out->m[0] = nv * rl;
@@ -215,7 +215,7 @@ RGINLINE void rg_mat4_frustum_lh_no(f32 left, f32 right, f32 bottom, f32 top,
 
 	out->m[8] = (right + left) * rl;
 	out->m[9] = (top + bottom) * tb;
-	out->m[10] = -(far_z + near_z) * fn;
+	out->m[10] = (far_z + near_z) * fn;
 	out->m[11] = 1.0f;
 
 	out->m[12] = 0.0f;
@@ -228,10 +228,10 @@ RGINLINE void rg_mat4_frustum_lh_no(f32 left, f32 right, f32 bottom, f32 top,
 RGINLINE void rg_mat4_frustum_lh_zo(f32 left, f32 right, f32 bottom, f32 top,
                                     f32 near_z, f32 far_z, rg_mat4* out)
 {
-	f32 rl = 1.0f / (right - left);
-	f32 tb = 1.0f / (top - bottom);
+	f32 rl = -1.0f / (right - left);
+	f32 tb = -1.0f / (top - bottom);
 	f32 fn = -1.0f / (far_z - near_z);
-	f32 nv = 2.0f * near_z;
+	f32 nv = -2.0f * near_z;
 
 #if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
 	_mm_store_ps(&out->m[0], _mm_setr_ps(nv * rl, 0.0f, 0.0f, 0.0f));
@@ -391,18 +391,32 @@ RGINLINE void rg_mat4_look_rh(const rg_vec3* eye, const rg_vec3* dir, const rg_v
 	f32 uy = sz * fx - sx * fz;
 	f32 uz = sx * fy - sy * fx;
 
+#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+	__m128 c0 = _mm_setr_ps(sx, ux, -fx, 0.0f);
+	__m128 c1 = _mm_setr_ps(sy, uy, -fy, 0.0f);
+	__m128 c2 = _mm_setr_ps(sz, uz, -fz, 0.0f);
+	__m128 translation = _mm_add_ps(
+	    _mm_add_ps(_mm_mul_ps(c0, _mm_set1_ps(eye->x)),
+	               _mm_mul_ps(c1, _mm_set1_ps(eye->y))),
+	    _mm_mul_ps(c2, _mm_set1_ps(eye->z)));
+	translation = _mm_sub_ps(_mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f), translation);
+	_mm_store_ps(&out->m[0], c0);
+	_mm_store_ps(&out->m[4], c1);
+	_mm_store_ps(&out->m[8], c2);
+	_mm_store_ps(&out->m[12], translation);
+#else
 	out->m[0] = sx;
-	out->m[1] = sy;
-	out->m[2] = sz;
+	out->m[1] = ux;
+	out->m[2] = -fx;
 	out->m[3] = 0.0f;
 
-	out->m[4] = ux;
+	out->m[4] = sy;
 	out->m[5] = uy;
-	out->m[6] = uz;
+	out->m[6] = -fy;
 	out->m[7] = 0.0f;
 
-	out->m[8] = -fx;
-	out->m[9] = -fy;
+	out->m[8] = sz;
+	out->m[9] = uz;
 	out->m[10] = -fz;
 	out->m[11] = 0.0f;
 
@@ -410,6 +424,7 @@ RGINLINE void rg_mat4_look_rh(const rg_vec3* eye, const rg_vec3* dir, const rg_v
 	out->m[13] = -(ux * eye->x + uy * eye->y + uz * eye->z);
 	out->m[14] = fx * eye->x + fy * eye->y + fz * eye->z;
 	out->m[15] = 1.0f;
+#endif
 }
 
 RGINLINE void rg_mat4_look_lh(const rg_vec3* eye, const rg_vec3* dir, const rg_vec3* up, rg_mat4* out)
@@ -467,17 +482,17 @@ RGINLINE void rg_mat4_look_lh(const rg_vec3* eye, const rg_vec3* dir, const rg_v
 	f32 uz = fx * sy - fy * sx;
 
 	out->m[0] = sx;
-	out->m[1] = sy;
-	out->m[2] = sz;
+	out->m[1] = ux;
+	out->m[2] = fx;
 	out->m[3] = 0.0f;
 
-	out->m[4] = ux;
+	out->m[4] = sy;
 	out->m[5] = uy;
-	out->m[6] = uz;
+	out->m[6] = fy;
 	out->m[7] = 0.0f;
 
-	out->m[8] = fx;
-	out->m[9] = fy;
+	out->m[8] = sz;
+	out->m[9] = uz;
 	out->m[10] = fz;
 	out->m[11] = 0.0f;
 
@@ -565,17 +580,17 @@ RGINLINE void rg_mat4_look_anyup_rh(const rg_vec3* eye, const rg_vec3* dir, rg_m
 	f32 uz = sx * fy - sy * fx;
 
 	out->m[0] = sx;
-	out->m[1] = sy;
-	out->m[2] = sz;
+	out->m[1] = ux;
+	out->m[2] = -fx;
 	out->m[3] = 0.0f;
 
-	out->m[4] = ux;
+	out->m[4] = sy;
 	out->m[5] = uy;
-	out->m[6] = uz;
+	out->m[6] = -fy;
 	out->m[7] = 0.0f;
 
-	out->m[8] = -fx;
-	out->m[9] = -fy;
+	out->m[8] = sz;
+	out->m[9] = uz;
 	out->m[10] = -fz;
 	out->m[11] = 0.0f;
 
@@ -654,17 +669,17 @@ RGINLINE void rg_mat4_look_anyup_lh(const rg_vec3* eye, const rg_vec3* dir, rg_m
 	f32 uz = fx * sy - fy * sx;
 
 	out->m[0] = sx;
-	out->m[1] = sy;
-	out->m[2] = sz;
+	out->m[1] = ux;
+	out->m[2] = fx;
 	out->m[3] = 0.0f;
 
-	out->m[4] = ux;
+	out->m[4] = sy;
 	out->m[5] = uy;
-	out->m[6] = uz;
+	out->m[6] = fy;
 	out->m[7] = 0.0f;
 
-	out->m[8] = fx;
-	out->m[9] = fy;
+	out->m[8] = sz;
+	out->m[9] = uz;
 	out->m[10] = fz;
 	out->m[11] = 0.0f;
 
@@ -806,8 +821,8 @@ RGINLINE void rg_mat4_persp_decomp_lh_no(const rg_mat4* proj, f32* near_z, f32* 
 {
 	f32 m00 = proj->m[0];
 	f32 m11 = proj->m[5];
-	f32 m20 = proj->m[8];
-	f32 m21 = proj->m[9];
+	f32 m20 = -proj->m[8];
+	f32 m21 = -proj->m[9];
 	f32 m22 = -proj->m[10];
 	f32 m32 = proj->m[14];
 
@@ -830,8 +845,8 @@ RGINLINE void rg_mat4_persp_decomp_lh_zo(const rg_mat4* proj, f32* near_z, f32* 
 {
 	f32 m00 = proj->m[0];
 	f32 m11 = proj->m[5];
-	f32 m20 = proj->m[8];
-	f32 m21 = proj->m[9];
+	f32 m20 = -proj->m[8];
+	f32 m21 = -proj->m[9];
 	f32 m22 = -proj->m[10];
 	f32 m32 = proj->m[14];
 
@@ -918,7 +933,7 @@ RGINLINE void rg_mat4_persp_decomp_x_rh_zo(const rg_mat4* proj, f32* left, f32* 
 RGINLINE void rg_mat4_persp_decomp_x_lh_no(const rg_mat4* proj, f32* left, f32* right)
 {
 	f32 m00 = proj->m[0];
-	f32 m20 = proj->m[8];
+	f32 m20 = -proj->m[8];
 	f32 m22 = -proj->m[10];
 	f32 near_z = proj->m[14] / (m22 - 1.0f);
 	*left = near_z * (m20 - 1.0f) / m00;
@@ -928,7 +943,7 @@ RGINLINE void rg_mat4_persp_decomp_x_lh_no(const rg_mat4* proj, f32* left, f32* 
 RGINLINE void rg_mat4_persp_decomp_x_lh_zo(const rg_mat4* proj, f32* left, f32* right)
 {
 	f32 m00 = proj->m[0];
-	f32 m20 = proj->m[8];
+	f32 m20 = -proj->m[8];
 	f32 m22 = -proj->m[10];
 	f32 near_z = proj->m[14] / m22;
 	*left = near_z * (m20 - 1.0f) / m00;
@@ -970,7 +985,7 @@ RGINLINE void rg_mat4_persp_decomp_y_rh_zo(const rg_mat4* proj, f32* top, f32* b
 
 RGINLINE void rg_mat4_persp_decomp_y_lh_no(const rg_mat4* proj, f32* top, f32* bottom)
 {
-	f32 m21 = proj->m[9];
+	f32 m21 = -proj->m[9];
 	f32 m11 = proj->m[5];
 	f32 m22 = -proj->m[10];
 	f32 near_z = proj->m[14] / (m22 - 1.0f);
@@ -980,7 +995,7 @@ RGINLINE void rg_mat4_persp_decomp_y_lh_no(const rg_mat4* proj, f32* top, f32* b
 
 RGINLINE void rg_mat4_persp_decomp_y_lh_zo(const rg_mat4* proj, f32* top, f32* bottom)
 {
-	f32 m21 = proj->m[9];
+	f32 m21 = -proj->m[9];
 	f32 m11 = proj->m[5];
 	f32 m22 = -proj->m[10];
 	f32 near_z = proj->m[14] / m22;

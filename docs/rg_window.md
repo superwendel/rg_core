@@ -81,7 +81,7 @@ dimensions for window layout and input coordinates.
 
 `rg_window_set_relative_mouse` changes SDL's mode without tracking input state.
 When using `RgInputState`, prefer `rg_input_set_relative_mouse`; it also updates
-the flag that makes `rg_input_update` read relative deltas.
+the flag that makes `rg_input_sample` read relative deltas.
 
 ## Configuration and ownership
 

@@ -5,14 +5,16 @@ provides memory arenas, containers, hashing, sorting, binary I/O, strings,
 math, timing, logging, assertions, formatting, and a small SDL3 foundation.
 These are the foundational modules I use to make games at Reverse Gravity.
 
+The supported library interface is C. Some benchmarks require C++17 to build.
+
 `rg_core` is not intended to be a general-purpose answer for every use case. It
 is the code I use to make games, released because its focused approach
 outperformed many popular libraries in the workloads I measured.
 
 Functions use internal linkage, so there is no implementation macro or
-separate C library target. Stateful modules have one state per translation
-unit. A unity build therefore gives the program one shared state;
-conventionally compiled translation units each receive their own state.
+separate C library target. Module-level state, such as the memory pool and
+logger settings, is local to each translation unit. A unity build shares that
+state across the program.
 
 Add `rg_core/src` to the compiler include path and include only the modules you
 use. Most modules depend only on the C standard library. `rg_sdl.h`,
@@ -62,7 +64,7 @@ int main(void)
 	int running = 1;
 	while (running)
 	{
-		rg_input_update(&input);
+		rg_input_begin_frame(&input);
 
 		SDL_Event event;
 		while (SDL_PollEvent(&event))
@@ -76,6 +78,7 @@ int main(void)
 			}
 		}
 
+		rg_input_sample(&input);
 		if (rg_input_is_key_pressed(&input, SDL_SCANCODE_ESCAPE))
 		{
 			running = 0;
@@ -136,7 +139,7 @@ each translation unit.
 | `rg_log` | `rg_sprintf`; optional x64 assembly helper | `rg_log_init` optionally sets the initial level | Logger configuration and level are translation-unit-local. |
 | `rg_sdl` | SDL3 | Call `rg_sdl_init`, then destroy SDL resources before `rg_sdl_quit` | SDL owns its process-wide subsystem state. |
 | `rg_window` | SDL3 with the video subsystem initialized | Create and destroy each window | Window handles are owned by the caller. |
-| `rg_input` | SDL3 event processing | Initialize caller storage, update once per frame, then process every event | Immediate state and optional event queues are caller-owned. |
+| `rg_input` | SDL3 event processing | Initialize caller storage; begin each frame, process events, then sample before gameplay | Immediate state and optional event queues are caller-owned. |
 | `rg_gpu` | SDL3 with video initialized and compiled shaders for shader-loading helpers | Create a device, claim windows, release GPU resources and windows, then destroy the device | GPU handles are caller-owned and follow SDL synchronization rules. |
 
 Functions use internal linkage. In a unity build, translation-unit-local state
@@ -199,6 +202,9 @@ intentional.
 
 ## Performance
 
+The following figures are historical measurements. Use the
+[current benchmark commands](docs/benchmarks/README.md) to measure this revision.
+
 | Workload | rg_core time | Compared with | Comparison time | Speedup |
 | --- | ---: | --- | ---: | ---: |
 | Mixed formatting | 109.42 ns/call | `stb_sprintf` 1.10 | 306.33 ns/call | **2.8x** |
@@ -220,12 +226,12 @@ From a Visual Studio Developer Command Prompt:
 build.bat test
 ```
 
-The aggregate target exercises the portable, SIMD, assembly, secure, custom,
-configured, and C++ compatibility builds. When SDL3 is available, it also runs
+The aggregate target exercises portable, SIMD, assembly, secure, custom, and
+configured C builds. When SDL3 is available, it also runs
 the SDL foundation and input suites; set `SDL3_DIR` to select an SDL3
 development package explicitly.
 
-Reproduce the documented three-process benchmark medians with:
+Run the algorithm, hash, and container benchmarks with three-process medians:
 
 ```bat
 build.bat bench_median
@@ -234,6 +240,10 @@ build.bat bench_median
 Use `build.bat bench` for a quicker one-process diagnostic pass. Set
 `RG_BENCH_DEPS` to enable the optional quadsort, crumsort, `stb_ds`, and EnTT
 comparisons described in the benchmark reports.
+
+Use `build.bat bench_regression` for the math, formatter, storage, input,
+and profiler regression workloads. See the [benchmark guide](docs/benchmarks/README.md)
+for paired before/after runs and optional comparison dependencies.
 
 ## Inspiration
 
