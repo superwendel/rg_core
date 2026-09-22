@@ -9,51 +9,49 @@ PUBLIC rg_u64toa_asm
 .code
 
 rg_strlen_asm PROC
+	; Check the first unaligned probe, then align all subsequent loads.
 	mov rax, rcx
+	mov edx, eax
+	and edx, 4095
+	cmp edx, 4064
+	ja scan_page_tail
+scan_vectors:
 	vpxor ymm0, ymm0, ymm0
-	; Page-safe AVX2 scan:
-	; - vector scan while the 32-byte load stays inside the current 4 KiB page
-	; - scalar scan the tail near page end to avoid cross-page faults
-	mov r8, rax
-	and r8, 0FFFFFFFFFFFFF000h   ; current page base
-	add r8, 1000h                ; start of next page
-	lea r9, [r8 - 32]            ; last safe 32-byte load start in this page
-
-ALIGN 16
-rg_strlen_loop:
-	cmp rax, r9
-	ja rg_strlen_tail
-
-	vmovdqu ymm1, ymmword ptr [rax]
-	vpcmpeqb ymm1, ymm1, ymm0
+	vpcmpeqb ymm1, ymm0, ymmword ptr [rax]
 	vpmovmskb edx, ymm1
 	test edx, edx
-	jnz rg_strlen_found
+	jnz scan_found
 	add rax, 32
-	jmp rg_strlen_loop
-
-rg_strlen_tail:
-	cmp rax, r8
-	jae rg_strlen_next_page
-	cmp byte ptr [rax], 0
-	je rg_strlen_found_byte
-	inc rax
-	jmp rg_strlen_tail
-
-rg_strlen_next_page:
-	add r8, 1000h
-	lea r9, [r8 - 32]
-	jmp rg_strlen_loop
-
-rg_strlen_found:
+	and rax, -32
+ALIGN 16
+scan_loop:
+	; Aligned loads stay within a page, including the final string block.
+	vpcmpeqb ymm1, ymm0, ymmword ptr [rax]
+	vpmovmskb edx, ymm1
+	test edx, edx
+	jnz scan_found
+	add rax, 32
+	jmp scan_loop
+scan_found:
 	bsf edx, edx
 	add rax, rdx
-
-rg_strlen_found_byte:
 	sub rax, rcx
 	vzeroupper
 	ret
+scan_page_tail:
+	cmp byte ptr [rax], 0
+	je scan_scalar_found
+	inc rax
+	test al, 31
+	jnz scan_page_tail
+	jmp scan_vectors
+scan_scalar_found:
+	sub rax, rcx
+	ret
 rg_strlen_asm ENDP
+
+; Keep the existing integer helpers at their original offsets.
+ALIGN 4
 
 ; char* rg_utoa_asm(uint32_t value, char* buf, int digits, const char* digit_pairs)
 rg_utoa_asm PROC

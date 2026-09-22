@@ -48,6 +48,10 @@ typedef struct SprintfBenchData
 	uint64_t u64_values[11][BENCH_ROWS];
 	uint64_t unsigned64_values[BENCH_ROWS];
 	int64_t signed64_values[BENCH_ROWS];
+	char scan_text[10][4][4160];
+	char scan_formats[10][4][4160];
+	const char* scan_strings[10][4];
+	const char* scan_affixes[10][4];
 } SprintfBenchData;
 
 static SprintfBenchData bench_data;
@@ -144,7 +148,90 @@ DEFINE_SPRINTF_SAMPLE(int64_mixed, 0, "%lld", (long long)data->signed64_values[i
 DEFINE_SPRINTF_SAMPLE(uint64_mixed, 0, "%llu", (unsigned long long)data->unsigned64_values[i])
 DEFINE_SPRINTF_SAMPLE(uint64_truncated, 8, "%llu", (unsigned long long)data->unsigned64_values[i])
 
+// Long inputs use bounded output to measure scanning/counting without changing
+// the output stride of historical cases. Four inputs vary alignment and % position.
+#define DEFINE_SCAN_FORMAT_SAMPLES(length, index)                                      \
+	DEFINE_SPRINTF_SAMPLE(literal_##length, BENCH_OUTPUT_SIZE,                        \
+		data->scan_strings[index][i & 3], data->integers[i])                          \
+	DEFINE_SPRINTF_SAMPLE(affixed_##length, BENCH_OUTPUT_SIZE,                        \
+		data->scan_affixes[index][i & 3], bench_names[i & 3])
+
+DEFINE_SCAN_FORMAT_SAMPLES(0, 0)
+DEFINE_SCAN_FORMAT_SAMPLES(1, 1)
+DEFINE_SCAN_FORMAT_SAMPLES(7, 2)
+DEFINE_SCAN_FORMAT_SAMPLES(15, 3)
+DEFINE_SCAN_FORMAT_SAMPLES(31, 4)
+DEFINE_SCAN_FORMAT_SAMPLES(32, 5)
+DEFINE_SCAN_FORMAT_SAMPLES(63, 6)
+DEFINE_SCAN_FORMAT_SAMPLES(128, 7)
+DEFINE_SCAN_FORMAT_SAMPLES(1024, 8)
+DEFINE_SCAN_FORMAT_SAMPLES(4096, 9)
+#undef DEFINE_SCAN_FORMAT_SAMPLES
+
+DEFINE_SPRINTF_SAMPLE(literal_mixed, BENCH_OUTPUT_SIZE,
+	data->scan_strings[(i / 4) % 10][i & 3], data->integers[i])
+DEFINE_SPRINTF_SAMPLE(affixed_mixed, BENCH_OUTPUT_SIZE,
+	data->scan_affixes[(i / 4) % 10][i & 3], bench_names[i & 3])
+
+#define DEFINE_SCAN_STRING_SAMPLES(length, index)                                      \
+	DEFINE_SPRINTF_SAMPLE(string_scan_##length, BENCH_OUTPUT_SIZE, "%s",              \
+		data->scan_strings[index][i & 3])                                            \
+	DEFINE_SPRINTF_SAMPLE(slice_scan_##length, BENCH_OUTPUT_SIZE, "%.*s",            \
+		length, data->scan_strings[9][i & 3])
+
+DEFINE_SCAN_STRING_SAMPLES(32, 5)
+DEFINE_SCAN_STRING_SAMPLES(128, 7)
+DEFINE_SCAN_STRING_SAMPLES(1024, 8)
+DEFINE_SCAN_STRING_SAMPLES(4096, 9)
+#undef DEFINE_SCAN_STRING_SAMPLES
+
 #if !defined(RG_BENCH_SPRINTF_STB)
+static double sample_strlen_values(SprintfBenchData* data, uint64_t* checksum,
+                                   int index, const char* name)
+{
+	double elapsed = 0.0;
+	uint64_t sum = 0;
+	for (int i = 0; i < BENCH_ROWS; ++i)
+		data->expected_counts[i] = (int)strlen(data->scan_strings[index][i & 3]);
+	for (int block = 0; block < (bench_validate_only ? 1 : BENCH_BLOCKS); ++block)
+	{
+		double start = bench_validate_only ? 0.0 : rg_bench_now_ns();
+		for (int i = 0; i < BENCH_ROWS; ++i)
+			data->counts[i] = (int)rg_strlen(data->scan_strings[index][i & 3]);
+		if (!bench_validate_only) elapsed += rg_bench_now_ns() - start;
+		for (int i = 0; i < BENCH_ROWS; ++i)
+		{
+			if (data->counts[i] != data->expected_counts[i])
+			{
+				fprintf(stderr, "%s.%s length mismatch at row %d\n", BENCH_BACKEND, name, i);
+				exit(1);
+			}
+		}
+		sum += rg_bench_consume(data->counts, sizeof(data->counts));
+	}
+	*checksum = sum;
+	return elapsed / ((double)BENCH_ROWS * BENCH_BLOCKS);
+}
+
+#define DEFINE_STRLEN_SAMPLE(length, index)                                            \
+	static double sample_strlen_##length(void* context, uint64_t* checksum)           \
+	{                                                                                \
+		return sample_strlen_values((SprintfBenchData*)context, checksum, index,      \
+		                            "strlen_" #length);                              \
+	}
+
+DEFINE_STRLEN_SAMPLE(0, 0)
+DEFINE_STRLEN_SAMPLE(1, 1)
+DEFINE_STRLEN_SAMPLE(7, 2)
+DEFINE_STRLEN_SAMPLE(15, 3)
+DEFINE_STRLEN_SAMPLE(31, 4)
+DEFINE_STRLEN_SAMPLE(32, 5)
+DEFINE_STRLEN_SAMPLE(63, 6)
+DEFINE_STRLEN_SAMPLE(128, 7)
+DEFINE_STRLEN_SAMPLE(1024, 8)
+DEFINE_STRLEN_SAMPLE(4096, 9)
+#undef DEFINE_STRLEN_SAMPLE
+
 static double sample_u64toa_values(SprintfBenchData* data, uint64_t* checksum,
                                    const uint64_t* values, const char* name)
 {
@@ -297,6 +384,29 @@ void BENCH_ENTRY(int argc, char** argv)
 		bench_data.long_text[i] = (char)('a' + i % 26);
 	bench_data.long_text[sizeof(bench_data.long_text) - 1] = '\0';
 	{
+		static const size_t lengths[] = {0, 1, 7, 15, 31, 32, 63, 128, 1024, 4096};
+		static const size_t offsets[] = {0, 1, 7, 31};
+		for (int index = 0; index < 10; ++index)
+		{
+			for (int variant = 0; variant < 4; ++variant)
+			{
+				size_t length = lengths[index];
+				char* text = bench_data.scan_text[index][variant] + offsets[variant];
+				char* format = bench_data.scan_formats[index][variant] + offsets[variant];
+				size_t prefix = variant == 0 ? 0 : variant == 1 ? length / 2 :
+				                variant == 2 ? length : length * 3 / 4;
+				for (size_t j = 0; j < length; ++j)
+					text[j] = (char)('a' + (j + variant * 3) % 26);
+				text[length] = '\0';
+				memcpy(format, text, prefix);
+				memcpy(format + prefix, "%s", 2);
+				memcpy(format + prefix + 2, text + prefix, length - prefix + 1);
+				bench_data.scan_strings[index][variant] = text;
+				bench_data.scan_affixes[index][variant] = format;
+			}
+		}
+	}
+	{
 		static const unsigned lengths[] = {0, 1, 7, 8, 9, 10, 11, 15, 16, 17, 23, 24, 25, 31, 32, 33};
 		static const int widths[] = {0, 7, 10, 16, 24, 40};
 		static const int precisions[] = {0, 4, 9, 10, 15, 16, 17, 32};
@@ -401,7 +511,41 @@ void BENCH_ENTRY(int argc, char** argv)
 	RUN_SPRINTF_SAMPLE(int64_mixed);
 	RUN_SPRINTF_SAMPLE(uint64_mixed);
 	RUN_SPRINTF_SAMPLE(uint64_truncated);
+#define RUN_SCAN_FORMAT_SAMPLES(length)                                                \
+	RUN_SPRINTF_SAMPLE(literal_##length);                                             \
+	RUN_SPRINTF_SAMPLE(affixed_##length)
+	RUN_SCAN_FORMAT_SAMPLES(0);
+	RUN_SCAN_FORMAT_SAMPLES(1);
+	RUN_SCAN_FORMAT_SAMPLES(7);
+	RUN_SCAN_FORMAT_SAMPLES(15);
+	RUN_SCAN_FORMAT_SAMPLES(31);
+	RUN_SCAN_FORMAT_SAMPLES(32);
+	RUN_SCAN_FORMAT_SAMPLES(63);
+	RUN_SCAN_FORMAT_SAMPLES(128);
+	RUN_SCAN_FORMAT_SAMPLES(1024);
+	RUN_SCAN_FORMAT_SAMPLES(4096);
+#undef RUN_SCAN_FORMAT_SAMPLES
+	RUN_SPRINTF_SAMPLE(literal_mixed);
+	RUN_SPRINTF_SAMPLE(affixed_mixed);
+	RUN_SPRINTF_SAMPLE(string_scan_32);
+	RUN_SPRINTF_SAMPLE(string_scan_128);
+	RUN_SPRINTF_SAMPLE(string_scan_1024);
+	RUN_SPRINTF_SAMPLE(string_scan_4096);
+	RUN_SPRINTF_SAMPLE(slice_scan_32);
+	RUN_SPRINTF_SAMPLE(slice_scan_128);
+	RUN_SPRINTF_SAMPLE(slice_scan_1024);
+	RUN_SPRINTF_SAMPLE(slice_scan_4096);
 #if !defined(RG_BENCH_SPRINTF_STB)
+	RUN_SPRINTF_SAMPLE(strlen_0);
+	RUN_SPRINTF_SAMPLE(strlen_1);
+	RUN_SPRINTF_SAMPLE(strlen_7);
+	RUN_SPRINTF_SAMPLE(strlen_15);
+	RUN_SPRINTF_SAMPLE(strlen_31);
+	RUN_SPRINTF_SAMPLE(strlen_32);
+	RUN_SPRINTF_SAMPLE(strlen_63);
+	RUN_SPRINTF_SAMPLE(strlen_128);
+	RUN_SPRINTF_SAMPLE(strlen_1024);
+	RUN_SPRINTF_SAMPLE(strlen_4096);
 	RUN_SPRINTF_SAMPLE(u64toa_10);
 	RUN_SPRINTF_SAMPLE(u64toa_11);
 	RUN_SPRINTF_SAMPLE(u64toa_12);

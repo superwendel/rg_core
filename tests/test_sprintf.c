@@ -294,34 +294,99 @@ static void test_string_precision_guard_page(void)
 	DWORD old_protection;
 	GetSystemInfo(&info);
 	page_size = (size_t)info.dwPageSize;
-	pages = (char*)VirtualAlloc(NULL, page_size * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	pages = (char*)VirtualAlloc(NULL, page_size * 3, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	CHECK(pages != NULL);
 	if (pages == NULL) return;
-	int protected_page = VirtualProtect(pages + page_size, page_size, PAGE_NOACCESS, &old_protection) != 0;
+	int protected_page = VirtualProtect(pages + page_size * 2, page_size, PAGE_NOACCESS, &old_protection) != 0;
 #else
 	long system_page_size = sysconf(_SC_PAGESIZE);
 	CHECK(system_page_size > 0);
 	if (system_page_size <= 0) return;
 	page_size = (size_t)system_page_size;
-	pages = (char*)mmap(NULL, page_size * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	pages = (char*)mmap(NULL, page_size * 3, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	CHECK(pages != MAP_FAILED);
 	if (pages == MAP_FAILED) return;
-	int protected_page = mprotect(pages + page_size, page_size, PROT_NONE) == 0;
+	int protected_page = mprotect(pages + page_size * 2, page_size, PROT_NONE) == 0;
 #endif
 	CHECK(protected_page);
 	if (protected_page)
 	{
-		char* slice = pages + page_size - 4;
+		static const size_t lengths[] = {
+			0, 1, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129,
+			255, 256, 257, 511, 512, 513, 1023
+		};
+		char* page_end = pages + page_size * 2;
+		char* slice = page_end - 4;
 		memcpy(slice, "abcd", 4);
 		check_string_slice(slice);
 		// Zero precision must not access even the first source byte.
-		CHECK_FORMAT("", "%.0s", pages + page_size);
-		CHECK(rg_snprintf(NULL, 0, "%.*s", 0, pages + page_size) == 0);
+		CHECK_FORMAT("", "%.0s", page_end);
+		CHECK(rg_snprintf(NULL, 0, "%.*s", 0, page_end) == 0);
+		for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i)
+		{
+			size_t length = lengths[i];
+			char* text = page_end - length - 1;
+			memset(text, 'a', length);
+			text[length] = '\0';
+			// Terminators at the last readable byte, with varied start alignment.
+			check_string_output_modes("%s", text);
+			check_string_output_modes("%.*s", (int)length + 32, text);
+			check_string_output_modes(text);
+#if defined(RG_SPRINTF_ASM_H)
+			CHECK(rg_strlen(text) == length);
+#endif
+			// Conversion/escape and its terminator occupy the last three bytes.
+			char* format = page_end - length - 3;
+			memset(format, 'b', length);
+			memcpy(format + length, "%s", 3);
+			check_string_output_modes(format, "tail");
+			memcpy(format + length, "%%", 3);
+			check_string_output_modes(format);
+
+			// Precision ends at the readable page boundary, without a terminator.
+			text = page_end - length;
+			if (length != 0) memset(text, 'c', length);
+			check_string_output_modes("%.*s", (int)length, text);
+			check_string_output_modes("[%*.*s]", (int)length + 7, (int)length, text);
+
+			// A valid conversion can also put '%' at a page's final byte.
+			format = pages + page_size - length - 1;
+			memset(format, 'd', length);
+			memcpy(format + length, "%s", 3);
+			check_string_output_modes(format, "tail");
+		}
+		// Start near a page end, then continue scanning into the next page.
+		static const size_t page_tails[] = {1, 7, 31};
+		for (size_t i = 0; i < sizeof(page_tails) / sizeof(page_tails[0]); ++i)
+		{
+			size_t tail = page_tails[i];
+			size_t length = tail + 32 * (i + 1);
+			char* text = pages + page_size - tail;
+			memset(text, 'e', length);
+			text[length] = '\0';
+			check_string_output_modes("%s", text);
+			check_string_output_modes("%.*s", (int)length + 32, text);
+			check_string_output_modes(text);
+#if defined(RG_SPRINTF_ASM_H)
+			CHECK(rg_strlen(text) == length);
+#endif
+			memcpy(text + length, "%s", 3);
+			check_string_output_modes(text, "tail");
+
+			// No terminator anywhere before the guard: precision must stop the scan.
+			memset(text, 'f', (size_t)(page_end - text));
+			const size_t precisions[] = {
+				tail - 1, tail, tail + 1, tail + 31, tail + 32, tail + 33,
+				length, length + 32
+			};
+			for (size_t j = 0; j < sizeof(precisions) / sizeof(precisions[0]); ++j)
+				check_string_output_modes("%.*s", (int)precisions[j], text);
+		}
 	}
 #if defined(_WIN32)
 	CHECK(VirtualFree(pages, 0, MEM_RELEASE) != 0);
 #else
-	CHECK(munmap(pages, page_size * 2) == 0);
+	CHECK(munmap(pages, page_size * 3) == 0);
 #endif
 #endif
 }

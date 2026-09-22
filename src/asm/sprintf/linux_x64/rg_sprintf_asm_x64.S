@@ -4,48 +4,48 @@
 .globl rg_strlen_asm
 .type rg_strlen_asm, @function
 rg_strlen_asm:
+	# Check the first unaligned probe, then align all subsequent loads.
 	mov rax, rdi
+	mov edx, eax
+	and edx, 4095
+	cmp edx, 4064
+	ja .Lscan_page_tail
+.Lscan_vectors:
 	vpxor ymm0, ymm0, ymm0
-
-	mov r8, rax
-	and r8, -4096
-	add r8, 4096
-	lea r9, [r8 - 32]
-
-.Lstrlen_loop:
-	cmp rax, r9
-	ja .Lstrlen_tail
-
-	vmovdqu ymm1, ymmword ptr [rax]
-	vpcmpeqb ymm1, ymm1, ymm0
+	vpcmpeqb ymm1, ymm0, ymmword ptr [rax]
 	vpmovmskb edx, ymm1
 	test edx, edx
-	jnz .Lstrlen_found
+	jnz .Lscan_found
 	add rax, 32
-	jmp .Lstrlen_loop
-
-.Lstrlen_tail:
-	cmp rax, r8
-	jae .Lstrlen_next_page
-	cmp byte ptr [rax], 0
-	je .Lstrlen_found_byte
-	inc rax
-	jmp .Lstrlen_tail
-
-.Lstrlen_next_page:
-	add r8, 4096
-	lea r9, [r8 - 32]
-	jmp .Lstrlen_loop
-
-.Lstrlen_found:
+	and rax, -32
+.p2align 4
+.Lscan_loop:
+	# Aligned loads stay within a page, including the final string block.
+	vpcmpeqb ymm1, ymm0, ymmword ptr [rax]
+	vpmovmskb edx, ymm1
+	test edx, edx
+	jnz .Lscan_found
+	add rax, 32
+	jmp .Lscan_loop
+.Lscan_found:
 	bsf edx, edx
 	add rax, rdx
-
-.Lstrlen_found_byte:
 	sub rax, rdi
 	vzeroupper
 	ret
+.Lscan_page_tail:
+	cmp byte ptr [rax], 0
+	je .Lscan_scalar_found
+	inc rax
+	test al, 31
+	jnz .Lscan_page_tail
+	jmp .Lscan_vectors
+.Lscan_scalar_found:
+	sub rax, rdi
+	ret
 .size rg_strlen_asm, .-rg_strlen_asm
+
+.p2align 2
 
 .globl rg_utoa_asm
 .type rg_utoa_asm, @function

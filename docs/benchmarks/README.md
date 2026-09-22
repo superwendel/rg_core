@@ -51,6 +51,10 @@ to an executable to select cases, for example:
 The formatter harness covers bounded string slices, varied string lengths,
 dynamic widths, affixed formats, direct integer and float conversion, and builder
 appends. Integer cases cover 10–20 decimal digits and mixed signed/unsigned values.
+Scanning cases cover 0–4096-byte strings with four input alignments, literal
+formats, and formats containing `%s`. In `affixed_N`, N counts literal bytes;
+the format also contains the two-byte conversion. Bounded scan cases vary string
+precision independently of output capacity.
 Storage includes string replacement with growth and with reused capacity; math
 includes component-wise vec4 floor/sqrt and ray/sphere hit and miss cases.
 The harnesses use rotating inputs and observable outputs. The math shared-profile
