@@ -40,6 +40,14 @@ typedef struct SprintfBenchData
 	int widths[BENCH_ROWS];
 	int signed_widths[BENCH_ROWS];
 	int precisions[BENCH_ROWS];
+#if !defined(RG_BENCH_SPRINTF_STB)
+	double zero_numbers[BENCH_ROWS];
+	int dtoa_precisions[BENCH_ROWS];
+	RgBuilder builders[BENCH_ROWS];
+#endif
+	uint64_t u64_values[11][BENCH_ROWS];
+	uint64_t unsigned64_values[BENCH_ROWS];
+	int64_t signed64_values[BENCH_ROWS];
 } SprintfBenchData;
 
 static SprintfBenchData bench_data;
@@ -132,6 +140,145 @@ DEFINE_SPRINTF_SAMPLE(string_width_lengths, 0, "%10s",
 	(i & 16) ? bench_short_names[i & 3] : data->string_text[i & 15])
 DEFINE_SPRINTF_SAMPLE(string_left_lengths, 0, "%-10s",
 	(i & 16) ? bench_short_names[i & 3] : data->string_text[i & 15])
+DEFINE_SPRINTF_SAMPLE(int64_mixed, 0, "%lld", (long long)data->signed64_values[i])
+DEFINE_SPRINTF_SAMPLE(uint64_mixed, 0, "%llu", (unsigned long long)data->unsigned64_values[i])
+DEFINE_SPRINTF_SAMPLE(uint64_truncated, 8, "%llu", (unsigned long long)data->unsigned64_values[i])
+
+#if !defined(RG_BENCH_SPRINTF_STB)
+static double sample_u64toa_values(SprintfBenchData* data, uint64_t* checksum,
+                                   const uint64_t* values, const char* name)
+{
+	double elapsed = 0.0;
+	uint64_t sum = 0;
+	memset(data->output, 0, sizeof(data->output));
+	for (int i = 0; i < BENCH_ROWS; ++i)
+		data->expected_counts[i] = snprintf(data->expected[i], BENCH_OUTPUT_SIZE,
+		                                   "%llu", (unsigned long long)values[i]);
+	for (int block = 0; block < (bench_validate_only ? 1 : BENCH_BLOCKS); ++block)
+	{
+		double start = bench_validate_only ? 0.0 : rg_bench_now_ns();
+		for (int i = 0; i < BENCH_ROWS; ++i)
+		{
+			char* end = rg_u64toa(values[i], data->output[i]);
+			data->counts[i] = (int)(end - data->output[i]);
+		}
+		if (!bench_validate_only) elapsed += rg_bench_now_ns() - start;
+		validate_output(data, name);
+		sum += rg_bench_consume(data->output, sizeof(data->output));
+		sum += rg_bench_consume(data->counts, sizeof(data->counts));
+	}
+	*checksum = sum;
+	return elapsed / ((double)BENCH_ROWS * BENCH_BLOCKS);
+}
+
+#define DEFINE_U64TOA_SAMPLE(digits)                                                   \
+	static double sample_u64toa_##digits(void* context, uint64_t* checksum)            \
+	{                                                                                \
+		SprintfBenchData* data = (SprintfBenchData*)context;                           \
+		return sample_u64toa_values(data, checksum, data->u64_values[(digits) - 10],   \
+		                            "u64toa_" #digits);                              \
+	}
+
+DEFINE_U64TOA_SAMPLE(10)
+DEFINE_U64TOA_SAMPLE(11)
+DEFINE_U64TOA_SAMPLE(12)
+DEFINE_U64TOA_SAMPLE(13)
+DEFINE_U64TOA_SAMPLE(14)
+DEFINE_U64TOA_SAMPLE(15)
+DEFINE_U64TOA_SAMPLE(16)
+DEFINE_U64TOA_SAMPLE(17)
+DEFINE_U64TOA_SAMPLE(18)
+DEFINE_U64TOA_SAMPLE(19)
+DEFINE_U64TOA_SAMPLE(20)
+#undef DEFINE_U64TOA_SAMPLE
+
+static double sample_dtoa_values(SprintfBenchData* data, uint64_t* checksum,
+                                 const double* values, const char* name)
+{
+	double elapsed = 0.0;
+	uint64_t sum = 0;
+	memset(data->output, 0, sizeof(data->output));
+	for (int i = 0; i < BENCH_ROWS; ++i)
+		data->expected_counts[i] = snprintf(data->expected[i], BENCH_OUTPUT_SIZE,
+		                                   "%.*f", data->dtoa_precisions[i], values[i]);
+	for (int block = 0; block < (bench_validate_only ? 1 : BENCH_BLOCKS); ++block)
+	{
+		double start = bench_validate_only ? 0.0 : rg_bench_now_ns();
+		for (int i = 0; i < BENCH_ROWS; ++i)
+		{
+			char* end = rg_dtoa(values[i], data->output[i], data->dtoa_precisions[i]);
+			data->counts[i] = (int)(end - data->output[i]);
+		}
+		if (!bench_validate_only) elapsed += rg_bench_now_ns() - start;
+		validate_output(data, name);
+		sum += rg_bench_consume(data->output, sizeof(data->output));
+		sum += rg_bench_consume(data->counts, sizeof(data->counts));
+	}
+	*checksum = sum;
+	return elapsed / ((double)BENCH_ROWS * BENCH_BLOCKS);
+}
+
+static double sample_dtoa_nonzero(void* context, uint64_t* checksum)
+{
+	SprintfBenchData* data = (SprintfBenchData*)context;
+	return sample_dtoa_values(data, checksum, data->numbers, "dtoa_nonzero");
+}
+
+static double sample_dtoa_zero(void* context, uint64_t* checksum)
+{
+	SprintfBenchData* data = (SprintfBenchData*)context;
+	return sample_dtoa_values(data, checksum, data->zero_numbers, "dtoa_zero");
+}
+
+static double sample_builder_format(SprintfBenchData* data, uint64_t* checksum,
+                                    size_t capacity, const char* name)
+{
+	double elapsed = 0.0;
+	uint64_t sum = 0;
+	memset(data->output, 0, sizeof(data->output));
+	for (int i = 0; i < BENCH_ROWS; ++i)
+	{
+		const char* prefix = bench_short_names[1 + i % 3];
+		(void)snprintf(data->expected[i], capacity, "%sname=%s id=%d",
+		               prefix, bench_names[i & 3], data->integers[i]);
+		data->expected_counts[i] = (int)strlen(data->expected[i]);
+	}
+	for (int block = 0; block < (bench_validate_only ? 1 : BENCH_BLOCKS); ++block)
+	{
+		// Reset and append the existing prefix outside the measured operation.
+		for (int i = 0; i < BENCH_ROWS; ++i)
+		{
+			rg_builder_init(&data->builders[i], data->output[i], capacity);
+			rg_builder_append(&data->builders[i], bench_short_names[1 + i % 3]);
+		}
+		double start = bench_validate_only ? 0.0 : rg_bench_now_ns();
+		for (int i = 0; i < BENCH_ROWS; ++i)
+		{
+			rg_builder_appendf(&data->builders[i], "name=%s id=%d",
+			                   bench_names[i & 3], data->integers[i]);
+			data->counts[i] = (int)data->builders[i].len;
+		}
+		if (!bench_validate_only) elapsed += rg_bench_now_ns() - start;
+		validate_output(data, name);
+		sum += rg_bench_consume(data->output, sizeof(data->output));
+		sum += rg_bench_consume(data->counts, sizeof(data->counts));
+	}
+	*checksum = sum;
+	return elapsed / ((double)BENCH_ROWS * BENCH_BLOCKS);
+}
+
+static double sample_builder_appendf(void* context, uint64_t* checksum)
+{
+	return sample_builder_format((SprintfBenchData*)context, checksum,
+	                             BENCH_OUTPUT_SIZE, "builder_appendf");
+}
+
+static double sample_builder_appendf_truncated(void* context, uint64_t* checksum)
+{
+	return sample_builder_format((SprintfBenchData*)context, checksum,
+	                             17, "builder_appendf_truncated");
+}
+#endif
 
 void BENCH_ENTRY(int argc, char** argv)
 {
@@ -141,6 +288,10 @@ void BENCH_ENTRY(int argc, char** argv)
 	{
 		bench_data.integers[i] = (int)((uint32_t)i * UINT32_C(2654435761) & UINT32_C(0x7fffffff));
 		bench_data.numbers[i] = 3.14159265358979 + (double)i * 0.001;
+#if !defined(RG_BENCH_SPRINTF_STB)
+		bench_data.zero_numbers[i] = (i & 1) ? -0.0 : 0.0;
+		bench_data.dtoa_precisions[i] = ((i / 17) & 3) * 2;
+#endif
 	}
 	for (size_t i = 0; i < sizeof(bench_data.long_text) - 1; ++i)
 		bench_data.long_text[i] = (char)('a' + i % 26);
@@ -160,6 +311,53 @@ void BENCH_ENTRY(int argc, char** argv)
 			bench_data.widths[i] = widths[(i / 32) % 6];
 			bench_data.signed_widths[i] = (i & 16) ? -bench_data.widths[i] : bench_data.widths[i];
 			bench_data.precisions[i] = precisions[(i / 192) % 8];
+		}
+	}
+	{
+		uint64_t lower = UINT64_C(1000000000);
+		for (int digits = 10; digits <= 20; ++digits)
+		{
+			uint64_t upper = digits == 20 ? UINT64_MAX : lower * 10u - 1u;
+			uint64_t span = upper - lower + 1u;
+			for (int i = 0; i < BENCH_ROWS; ++i)
+			{
+				// Mix before reducing so every length spans its full numeric range.
+				uint64_t value = (uint64_t)(i + 1) * UINT64_C(0x9e3779b97f4a7c15);
+				value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+				value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
+				value ^= value >> 31;
+				value = lower + value % span;
+				// Include both sides of every decimal boundary across cases.
+				switch (i & 31)
+				{
+				case 0: value = lower; break;
+				case 1: value = lower + 1u; break;
+				case 2: value = upper - 1u; break;
+				case 3: value = upper; break;
+				}
+				bench_data.u64_values[digits - 10][i] = value;
+			}
+			if (digits != 20) lower *= 10u;
+		}
+		for (int i = 0; i < BENCH_ROWS; ++i)
+		{
+			uint64_t value = bench_data.u64_values[i % 11][i];
+			switch (i % 23)
+			{
+			case 0: value = 0; break;
+			case 1: value = 1; break;
+			case 2: value = 9; break;
+			case 3: value = 10; break;
+			case 4: value = UINT32_MAX; break;
+			case 5: value = (uint64_t)UINT32_MAX + 1u; break;
+			case 6: value = INT64_MAX; break;
+			case 7: value = (uint64_t)INT64_MAX + 1u; break;
+			case 8: value = UINT64_MAX; break;
+			}
+			bench_data.unsigned64_values[i] = value;
+			int64_t magnitude = (int64_t)(value & (uint64_t)INT64_MAX);
+			bench_data.signed64_values[i] = (i & 1) ? -magnitude : magnitude;
+			if (i % 29 == 0) bench_data.signed64_values[i] = INT64_MIN;
 		}
 	}
 
@@ -200,6 +398,26 @@ void BENCH_ENTRY(int argc, char** argv)
 	RUN_SPRINTF_SAMPLE(string_width_truncated);
 	RUN_SPRINTF_SAMPLE(string_width_lengths);
 	RUN_SPRINTF_SAMPLE(string_left_lengths);
+	RUN_SPRINTF_SAMPLE(int64_mixed);
+	RUN_SPRINTF_SAMPLE(uint64_mixed);
+	RUN_SPRINTF_SAMPLE(uint64_truncated);
+#if !defined(RG_BENCH_SPRINTF_STB)
+	RUN_SPRINTF_SAMPLE(u64toa_10);
+	RUN_SPRINTF_SAMPLE(u64toa_11);
+	RUN_SPRINTF_SAMPLE(u64toa_12);
+	RUN_SPRINTF_SAMPLE(u64toa_13);
+	RUN_SPRINTF_SAMPLE(u64toa_14);
+	RUN_SPRINTF_SAMPLE(u64toa_15);
+	RUN_SPRINTF_SAMPLE(u64toa_16);
+	RUN_SPRINTF_SAMPLE(u64toa_17);
+	RUN_SPRINTF_SAMPLE(u64toa_18);
+	RUN_SPRINTF_SAMPLE(u64toa_19);
+	RUN_SPRINTF_SAMPLE(u64toa_20);
+	RUN_SPRINTF_SAMPLE(dtoa_nonzero);
+	RUN_SPRINTF_SAMPLE(dtoa_zero);
+	RUN_SPRINTF_SAMPLE(builder_appendf);
+	RUN_SPRINTF_SAMPLE(builder_appendf_truncated);
+#endif
 #undef RUN_SPRINTF_SAMPLE
 	if (bench_validate_only) printf("Validated sprintf.%s outputs.\n", BENCH_BACKEND);
 }

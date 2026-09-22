@@ -90,6 +90,70 @@ static void test_vectors(void)
 	check_vec3(&out, 0.6f, 0.8f, 0.0f, 2e-3f);
 }
 
+static void test_vec4_floor_and_sqrt(void)
+{
+	const f32 floor_inputs[][4] = {
+		{-1.25f, 2.75f, -3.0f, 0.5f},
+		{-0.0f, 0.0f, -0.5f, 8388608.0f},
+		{-8388608.0f, 1.9999999f, -1.0000001f, 123.456f}
+	};
+	const f32 sqrt_inputs[][4] = {
+		{1.0f, 4.0f, 9.0f, 16.0f},
+		{0.0f, 0.25f, 2.0f, 0.0001f},
+		{1000000.0f, 0.5f, 25.0f, 0.000001f}
+	};
+	for (size_t i = 0; i < RG_ARRAY_COUNT(floor_inputs); ++i)
+	{
+		rg_vec4 input, output, in_place;
+		rg_vec4_set(&input, floor_inputs[i][0], floor_inputs[i][1], floor_inputs[i][2], floor_inputs[i][3]);
+		rg_vec4_floor(&input, &output);
+		in_place = input;
+		rg_vec4_floor(&in_place, &in_place);
+		for (size_t lane = 0; lane < 4; ++lane)
+		{
+			rg_float_bits expected, actual, aliased;
+			expected.f = rg_floorf(input.data[lane]);
+			actual.f = output.data[lane];
+			aliased.f = in_place.data[lane];
+			CHECK(actual.u == expected.u);
+			CHECK(aliased.u == expected.u);
+		}
+	}
+	for (size_t i = 0; i < RG_ARRAY_COUNT(sqrt_inputs); ++i)
+	{
+		rg_vec4 input, output, in_place;
+		rg_vec4_set(&input, sqrt_inputs[i][0], sqrt_inputs[i][1], sqrt_inputs[i][2], sqrt_inputs[i][3]);
+		rg_vec4_sqrt(&input, &output);
+		in_place = input;
+		rg_vec4_sqrt(&in_place, &in_place);
+		for (size_t lane = 0; lane < 4; ++lane)
+		{
+			f32 expected = sqrtf(input.data[lane]);
+			CHECK_CLOSE(output.data[lane], expected, 2e-5f * (1.0f + expected));
+			CHECK(output.data[lane] == in_place.data[lane]);
+		}
+	}
+#if RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
+	{
+		rg_vec4 input = rg_vec4(-0.0f, INFINITY, -INFINITY, NAN);
+		rg_vec4 output;
+		rg_float_bits zero;
+		rg_vec4_floor(&input, &output);
+		zero.f = output.x;
+		CHECK(zero.u == UINT32_C(0x80000000));
+		CHECK(output.y == INFINITY);
+		CHECK(output.z == -INFINITY);
+		CHECK(isnan(output.w));
+		rg_vec4_sqrt(&input, &output);
+		zero.f = output.x;
+		CHECK(zero.u == UINT32_C(0x80000000));
+		CHECK(output.y == INFINITY);
+		CHECK(isnan(output.z));
+		CHECK(isnan(output.w));
+	}
+#endif
+}
+
 static void test_matrices(void)
 {
 	rg_mat4 identity;
@@ -174,6 +238,50 @@ static void test_geometry(void)
 	CHECK_CLOSE(far_t, 6.0f, 2e-3f);
 	rg_ray_at(&ray, near_t, &hit);
 	check_vec3(&hit, 0.0f, 0.0f, -1.0f, 2e-3f);
+}
+
+static void test_ray_sphere_roots(void)
+{
+	rg_sphere sphere;
+	rg_vec3 center = rg_vec3(0.0f, 0.0f, 0.0f);
+	rg_ray ray;
+	f32 near_t, far_t;
+	rg_sphere_set(&sphere, &center, 1.0f);
+	rg_vec3_set(&ray.dir, 0.0f, 1.0f, 0.0f);
+
+	// A tangent ray starting on the sphere has a repeated zero root.
+	rg_vec3_set(&ray.origin, 1.0f, 0.0f, 0.0f);
+	CHECK(rg_ray_sphere(&ray, &sphere, &near_t, &far_t));
+	CHECK(near_t == 0.0f);
+	CHECK(far_t == 0.0f);
+	CHECK(rg_ray_sphere(&ray, &sphere, NULL, NULL));
+	CHECK(rg_ray_sphere(&ray, &sphere, NULL, &far_t));
+	CHECK(far_t == 0.0f);
+	CHECK(rg_ray_sphere(&ray, &sphere, &near_t, NULL));
+	CHECK(near_t == 0.0f);
+
+	// Nonzero repeated roots retain their distance and forward-hit semantics.
+	rg_vec3_set(&ray.origin, 1.0f, -2.0f, 0.0f);
+	CHECK(rg_ray_sphere(&ray, &sphere, &near_t, &far_t));
+	CHECK_CLOSE(near_t, 2.0f, 2e-5f);
+	CHECK_CLOSE(far_t, 2.0f, 2e-5f);
+	rg_vec3_set(&ray.origin, 1.0f, 2.0f, 0.0f);
+	CHECK(!rg_ray_sphere(&ray, &sphere, &near_t, &far_t));
+	CHECK_CLOSE(near_t, -2.0f, 2e-5f);
+	CHECK_CLOSE(far_t, -2.0f, 2e-5f);
+
+	rg_vec3_set(&ray.origin, 0.0f, 0.0f, 0.0f);
+	CHECK(rg_ray_sphere(&ray, &sphere, &near_t, &far_t));
+	CHECK_CLOSE(near_t, -1.0f, 2e-5f);
+	CHECK_CLOSE(far_t, 1.0f, 2e-5f);
+	rg_vec3_set(&ray.origin, 0.0f, 1.0f, 0.0f);
+	CHECK(rg_ray_sphere(&ray, &sphere, &near_t, &far_t));
+	CHECK_CLOSE(near_t, -2.0f, 2e-5f);
+	CHECK(far_t == 0.0f);
+	rg_vec3_set(&ray.origin, 2.0f, 0.0f, 0.0f);
+	near_t = far_t = 123.0f;
+	CHECK(!rg_ray_sphere(&ray, &sphere, &near_t, &far_t));
+	CHECK(near_t == 123.0f && far_t == 123.0f);
 }
 
 static void test_auxiliary_modules(void)
@@ -474,9 +582,11 @@ int main(void)
 	test_layout();
 	test_scalar();
 	test_vectors();
+	test_vec4_floor_and_sqrt();
 	test_matrices();
 	test_quaternions_and_euler();
 	test_geometry();
+	test_ray_sphere_roots();
 	test_auxiliary_modules();
 	test_rotation_round_trips();
 	test_camera_basis();

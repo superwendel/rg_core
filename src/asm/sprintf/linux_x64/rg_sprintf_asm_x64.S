@@ -129,9 +129,6 @@ rg_utoa_asm:
 .globl rg_u64toa_asm
 .type rg_u64toa_asm, @function
 rg_u64toa_asm:
-	push r12
-	push r13
-	push r14
 	push r15
 
 	mov r9, rcx
@@ -144,44 +141,40 @@ rg_u64toa_asm:
 	cmp rax, 1000000000
 	jb .Lu64_tail
 
-	xor rdx, rdx
-	mov r8, 1000000000
-	div r8
-	mov r15, rax
-	mov r12d, edx
+	# Exact unsigned division by 10^9: remove its factor of 2^9 first,
+	# then multiply by ceil(2^75 / 1953125) and take the high bits.
+	mov r8d, eax
+	shr rax, 9
+	mov rcx, 0x0044B82FA09B5A53
+	mul rcx
+	shr rdx, 11
+	mov r15, rdx
+	# The remainder is below 10^9, so low-32-bit subtraction is sufficient.
+	imul edx, edx, 1000000000
+	sub r8d, edx
 	sub r10, 9
-	lea r14, [r10 + 1]
 
-	mov eax, r12d
-	mov r8d, 0x2AF31DC5
-	mul r8d
-	mov ecx, edx
-	shr ecx, 24
-	imul edx, ecx, 100000000
-	mov r13d, r12d
-	sub r13d, edx
+	mov eax, r8d
+	mov ecx, 0x2AF31DC5
+	mul ecx
+	shr edx, 24
+	imul ecx, edx, 100000000
+	sub r8d, ecx
 
-	add cl, '0'
-	mov byte ptr [r10], cl
+	add dl, '0'
+	mov byte ptr [r10], dl
 
-	mov eax, r13d
-	mov r8d, 0xD1B71759
-	mul r8d
-	mov eax, edx
-	shr eax, 13
-	mov r12d, eax
-	imul edx, r12d, 10000
-	mov ecx, r13d
-	sub ecx, edx
+	mov eax, r8d
+	mov ecx, 0xD1B71759
+	mul ecx
+	shr edx, 13
+	imul eax, edx, 10000
+	sub r8d, eax
 
-	mov eax, r12d
-	lea edx, [rax * 4]
-	mov eax, dword ptr [r9 + rdx]
-	mov dword ptr [r14], eax
-	mov eax, ecx
-	lea edx, [rax * 4]
-	mov eax, dword ptr [r9 + rdx]
-	mov dword ptr [r14 + 4], eax
+	mov eax, dword ptr [r9 + rdx * 4]
+	mov dword ptr [r10 + 1], eax
+	mov eax, dword ptr [r9 + r8 * 4]
+	mov dword ptr [r10 + 5], eax
 
 	mov rax, r15
 	jmp .Lu64_loop
@@ -224,9 +217,6 @@ rg_u64toa_asm:
 .Lu64_done:
 	mov rax, r11
 	pop r15
-	pop r14
-	pop r13
-	pop r12
 	ret
 .size rg_u64toa_asm, .-rg_u64toa_asm
 

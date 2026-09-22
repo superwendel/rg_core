@@ -43,6 +43,8 @@ struct MathInputs
 	rg_mat4 rotation[MATH_BATCH], trs[MATH_BATCH];
 	rg_mat3 rotation3[MATH_BATCH];
 	rg_mat4 projection_no[MATH_BATCH], projection_zo[MATH_BATCH];
+	rg_sphere spheres[MATH_BATCH];
+	rg_ray rays_forward[MATH_BATCH], rays_inside[MATH_BATCH], rays_miss[MATH_BATCH];
 };
 
 static MathInputs inputs;
@@ -102,6 +104,17 @@ static void prepare_inputs(void)
 		rg_vec4_set(&inputs.v4b[i], inputs.b[i].x, inputs.b[i].y, inputs.b[i].z, random_unit(&rng));
 		inputs.angle[i] = -2.9f + 5.8f * random_unit(&rng);
 		inputs.scalar[i] = 0.5f + random_unit(&rng);
+		const f32 radius = 1.0f + inputs.scalar[i] * 0.25f;
+		rg_sphere_set(&inputs.spheres[i], &inputs.eye[i], radius);
+		rg_vec3 ray_direction = rg_vec3(0, 0, 1);
+		rg_vec3 ray_origin = inputs.eye[i];
+		ray_origin.z -= 4.0f * radius;
+		rg_ray_set(&inputs.rays_forward[i], &ray_origin, &ray_direction);
+		ray_origin.x += 3.0f * radius;
+		rg_ray_set(&inputs.rays_miss[i], &ray_origin, &ray_direction);
+		ray_origin = inputs.eye[i];
+		ray_origin.x += 0.25f * radius;
+		rg_ray_set(&inputs.rays_inside[i], &ray_origin, &ray_direction);
 		rg_vec3 axis = inputs.direction[i];
 		// Principal axes plus mixed rotations exercise all extraction branches.
 		if ((i & 3u) != 3u)
@@ -207,6 +220,7 @@ static void run_case(const char* name, Operation operation)
 struct TrsResult { rg_vec3 translation; rg_quat rotation; rg_vec3 scale; };
 struct ProjectionResult { f32 near_z, far_z, top, bottom, left, right; };
 struct AxisResult { f32 first, second; };
+struct RaySphereResult { f32 near_t, far_t; int hit; };
 
 int main(int argc, char** argv)
 {
@@ -229,6 +243,22 @@ int main(int argc, char** argv)
 	run_case<rg_vec4>("math.mat4_mulv4", [](size_t i, rg_vec4* r) { rg_mat4_mulv4(&inputs.matrices[0][i], &inputs.v4a[i], r); });
 	run_case<rg_quat>("math.quat_mul", [](size_t i, rg_quat* r) { rg_quat_mul(&inputs.q0[i], &inputs.q1[i], r); });
 	run_case<rg_quat>("math.quat_normalize", [](size_t i, rg_quat* r) { rg_quat_normalize(&inputs.q0[i], r); });
+
+	// Component-wise operations retain the scalar helpers' configuration.
+	run_case<rg_vec4>("math.vec4_floor", [](size_t i, rg_vec4* r) { rg_vec4_floor(&inputs.v4a[i], r); });
+	run_case<rg_vec4>("math.vec4_sqrt", [](size_t i, rg_vec4* r) { rg_vec4_sqrt(&inputs.v4b[i], r); });
+	run_case<RaySphereResult>("math.ray_sphere_forward", [](size_t i, RaySphereResult* r) {
+		r->near_t = r->far_t = 0.0f;
+		r->hit = rg_ray_sphere(&inputs.rays_forward[i], &inputs.spheres[i], &r->near_t, &r->far_t);
+	});
+	run_case<RaySphereResult>("math.ray_sphere_inside", [](size_t i, RaySphereResult* r) {
+		r->near_t = r->far_t = 0.0f;
+		r->hit = rg_ray_sphere(&inputs.rays_inside[i], &inputs.spheres[i], &r->near_t, &r->far_t);
+	});
+	run_case<RaySphereResult>("math.ray_sphere_miss", [](size_t i, RaySphereResult* r) {
+		r->near_t = r->far_t = 0.0f;
+		r->hit = rg_ray_sphere(&inputs.rays_miss[i], &inputs.spheres[i], &r->near_t, &r->far_t);
+	});
 
 	// Corrected camera, rotation-conversion, and projection paths.
 	run_case<rg_mat4>("math.look_at_rh", [](size_t i, rg_mat4* r) { rg_mat4_look_at_rh(&inputs.eye[i], &inputs.target[i], &inputs.up[i], r); });

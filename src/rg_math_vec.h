@@ -2935,10 +2935,14 @@ RGINLINE void rg_vec4_fract(const rg_vec4* v, rg_vec4* out)
 
 RGINLINE void rg_vec4_floor(const rg_vec4* v, rg_vec4* out)
 {
+#if defined(RG_MATH_SSE41) && RG_MATH_MAX_PERF && RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
+	RG_VEC4_STORE(out, _mm_floor_ps(RG_VEC4_LOAD(v)));
+#else
 	out->x = rg_floorf(v->x);
 	out->y = rg_floorf(v->y);
 	out->z = rg_floorf(v->z);
 	out->w = rg_floorf(v->w);
+#endif
 }
 
 RGINLINE void rg_vec4_mods(const rg_vec4* v, f32 s, rg_vec4* out)
@@ -2991,10 +2995,14 @@ RGINLINE f32 rg_vec4_hadd(const rg_vec4* v)
 
 RGINLINE void rg_vec4_sqrt(const rg_vec4* v, rg_vec4* out)
 {
+#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF && RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
+	RG_VEC4_STORE(out, _mm_sqrt_ps(RG_VEC4_LOAD(v)));
+#else
 	out->x = rg_sqrtf(v->x);
 	out->y = rg_sqrtf(v->y);
 	out->z = rg_sqrtf(v->z);
 	out->w = rg_sqrtf(v->w);
+#endif
 }
 
 RGINLINE void rg_vec4_cubic(f32 s, rg_vec4* out)

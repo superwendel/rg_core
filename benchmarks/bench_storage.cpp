@@ -4,6 +4,7 @@
 #include <rg_containers.h>
 #include <rg_hash.h>
 #include <rg_random.h>
+#include <rg_string.h>
 
 #include <algorithm>
 #include <array>
@@ -215,6 +216,61 @@ static double smallvec_sample(void* context, uint64_t* checksum)
 	return elapsed / (double)(instances * count * repeats);
 }
 
+struct StringCopyCase { size_t old_len; size_t replacement_len; };
+
+STORAGE_NOINLINE static void setup_string_copies(RgString* strings, size_t count,
+                                                const char* initial, size_t old_len)
+{
+	rg_arena_reset(&storage_arena);
+	for (size_t i = 0; i < count; ++i)
+		rgs_init_with_n(&strings[i], &storage_arena, initial, old_len);
+}
+
+static double string_copy_sample(void* context, uint64_t* checksum)
+{
+	const StringCopyCase& config = *static_cast<StringCopyCase*>(context);
+	(void)rg_bench_consume(&config, sizeof(config));
+	const size_t instances = MB(8) / (config.old_len + config.replacement_len + 2);
+	const size_t repeats = 8;
+	std::vector<RgString> strings(instances);
+	std::vector<char> initial(config.old_len);
+	std::vector<char> replacement(config.replacement_len);
+	for (size_t i = 0; i < initial.size(); ++i) initial[i] = (char)(i * 17u + 3u);
+	for (size_t i = 0; i < replacement.size(); ++i) replacement[i] = (char)(i * 31u + 5u);
+	uint64_t expected = rg_bench_consume(replacement.data(), replacement.size());
+
+	// Commit and touch the complete allocation range before timing the copies.
+	const size_t arena_bytes = instances * (config.old_len + config.replacement_len + 2);
+	rg_arena_reset(&storage_arena);
+	void* warmed = rg_arena_alloc_aligned(&storage_arena, arena_bytes, RG_ALIGNOF(char));
+	require(warmed != NULL);
+	memset(warmed, 0, arena_bytes);
+	(void)rg_bench_consume(warmed, arena_bytes);
+
+	double elapsed = 0;
+	*checksum = 0;
+	for (size_t r = 0; r < repeats; ++r)
+	{
+		setup_string_copies(strings.data(), instances, initial.data(), initial.size());
+		for (const RgString& s : strings)
+			require(s.len == config.old_len && s.cap == config.old_len);
+		double start = rg_bench_now_ns();
+		for (size_t i = 0; i < instances; ++i)
+			rgs_copy_n(&strings[i], replacement.data(), replacement.size());
+		elapsed += rg_bench_now_ns() - start;
+		for (const RgString& s : strings)
+		{
+			require(s.len == config.replacement_len &&
+			        s.cap == std::max(config.old_len, config.replacement_len));
+			require(s.data[s.len] == '\0');
+			uint64_t actual = rg_bench_consume(s.data, s.len);
+			require(actual == expected);
+			*checksum += actual;
+		}
+	}
+	return elapsed / (double)(instances * repeats);
+}
+
 RG_HASH_MAP_DEFINE(uint32_t, uint32_t, BenchU32Map, rg_hash_u32, rg_hash_eq_u32);
 RG_HASH_MAP_DEFINE(const char*, uint32_t, BenchStringMap, rg_hash_str, rg_hash_eq_str);
 RG_HASH_SET_DEFINE(uint32_t, BenchU32Set, rg_hash_u32, rg_hash_eq_u32);
@@ -386,6 +442,21 @@ int main(int argc, char** argv)
 	size_t inline_count = 8, spill_count = 16;
 	rg_bench_run("storage.smallvec.inline8", smallvec_sample, &inline_count);
 	rg_bench_run("storage.smallvec.spill16", smallvec_sample, &spill_count);
+	for (StringCopyCase config : {StringCopyCase{31, 32}, StringCopyCase{4096, 4097},
+	                              StringCopyCase{4096, 8192}, StringCopyCase{65536, 65537}})
+	{
+		char name[128];
+		snprintf(name, sizeof(name), "storage.string.copy_growth.old%zu.new%zu",
+		         config.old_len, config.replacement_len);
+		rg_bench_run(name, string_copy_sample, &config);
+	}
+	for (size_t len : {size_t(31), size_t(4096), size_t(65536)})
+	{
+		StringCopyCase config = {len, len};
+		char name[128];
+		snprintf(name, sizeof(name), "storage.string.copy_reuse.n%zu", len);
+		rg_bench_run(name, string_copy_sample, &config);
+	}
 	run_hash_cases<BenchU32Map>("map_u32");
 	run_hash_cases<BenchStringMap>("map_string32");
 	run_hash_cases<BenchU32Set>("set_u32");

@@ -233,6 +233,19 @@ static void test_rgstring(RgArena* arena)
 	rgs_copy_n(&alias, rgs_data(&alias) + 2, 4);
 	CHECK(alias.len == 4 && strcmp(rgs_data(&alias), "cabc") == 0);
 
+	RgString growing_alias;
+	rgs_init_with(&growing_alias, arena, "abc");
+	char* old_data = growing_alias.data;
+	// Including the old terminator requires growth while reading the old buffer.
+	rgs_copy_n(&growing_alias, growing_alias.data, growing_alias.len + 1);
+	CHECK(growing_alias.data != old_data);
+	CHECK(growing_alias.len == 4 && growing_alias.cap == 4);
+	CHECK(memcmp(growing_alias.data, "abc\0", 5) == 0);
+	CHECK(strcmp(old_data, "abc") == 0);
+	rgs_copy(&growing_alias, "a longer replacement");
+	CHECK(growing_alias.len == strlen("a longer replacement"));
+	CHECK(strcmp(growing_alias.data, "a longer replacement") == 0);
+
 	static const char binary[] = {'a', '\0', 'b'};
 	RgString bytes;
 	rgs_init_with_n(&bytes, arena, binary, sizeof(binary));
@@ -263,6 +276,17 @@ static void test_rgstring(RgArena* arena)
 	rgs_copy(&failed, "this allocation cannot fit");
 	CHECK(failed.len == 0 && failed.cap == 0);
 	CHECK(strcmp(rgs_data(&failed), "") == 0);
+
+	char retained[] = "old";
+	RgString failed_nonempty = {&full, retained, 3, 3};
+	rgs_copy(&failed_nonempty, "this allocation cannot fit");
+	CHECK(failed_nonempty.data == retained);
+	CHECK(failed_nonempty.len == 3 && failed_nonempty.cap == 3);
+	CHECK(strcmp(failed_nonempty.data, "old") == 0 && full.used == 1);
+	rgs_copy_n(&failed_nonempty, retained, SIZE_MAX);
+	CHECK(failed_nonempty.data == retained);
+	CHECK(failed_nonempty.len == 3 && failed_nonempty.cap == 3);
+	CHECK(strcmp(failed_nonempty.data, "old") == 0 && full.used == 1);
 
 	rgs_free(&text);
 	CHECK(text.arena == NULL && text.len == 0 && text.cap == 0);

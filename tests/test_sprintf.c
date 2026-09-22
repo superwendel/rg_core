@@ -356,6 +356,96 @@ static void test_direct_conversions(void)
 	CHECK(end == buffer + strlen(buffer));
 }
 
+static void check_u64_conversion(uint64_t value)
+{
+	char expected[21];
+	int digits = sprintf(expected, "%llu", (unsigned long long)value);
+	int paths = 1;
+#if defined(RG_SPRINTF_HAS_ASM) && defined(RG_SPRINTF_ASM_U64TOA)
+	paths = 2;
+#endif
+	for (int path = 0; path < paths; ++path)
+	{
+		char guarded[40];
+		char* buffer = guarded + 8;
+		char* end;
+		int failures_before = tests_failed;
+		int canaries_intact = 1;
+		memset(guarded, 'Z', sizeof(guarded));
+#if defined(RG_SPRINTF_HAS_ASM) && defined(RG_SPRINTF_ASM_U64TOA)
+		// The public wrapper uses its C fast path for 19- and 20-digit values.
+		if (path != 0)
+			end = rg_u64toa_asm(value, buffer, digits, rg_digit_quads);
+		else
+#endif
+			end = rg_u64toa(value, buffer);
+		CHECK(end == buffer + digits);
+		CHECK(memcmp(buffer, expected, (size_t)digits) == 0);
+		CHECK(buffer[digits] == '\0');
+		for (size_t i = 0; i < sizeof(guarded); ++i)
+		{
+			if ((i < 8 || i > (size_t)digits + 8) && guarded[i] != 'Z')
+				canaries_intact = 0;
+		}
+		CHECK(canaries_intact);
+		if (tests_failed != failures_before)
+			printf("  u64 value=%llu path=%s\n", (unsigned long long)value,
+			       path == 0 ? "public" : "asm");
+	}
+}
+
+static void test_u64_conversion_boundaries(void)
+{
+	static const uint64_t chunk_quotients[] = {
+		1, 2, 9, 10, 99, 100, 9999, 10000, 999999999,
+		UINT64_C(1000000000), UINT64_C(1000000001),
+		UINT64_C(18446744072), UINT64_C(18446744073)
+	};
+	static const uint32_t chunk_remainders[] = {
+		0, 1, 9, 10, 99, 100, 9999, 10000, 99999999, 100000000, 999999999
+	};
+	const uint64_t chunk = UINT64_C(1000000000);
+	uint64_t random_state = UINT64_C(0xD1B54A32D192ED03);
+
+	check_u64_conversion(0);
+	check_u64_conversion(UINT64_MAX);
+	check_u64_conversion(UINT64_MAX - 1);
+	check_u64_conversion(UINT64_MAX - 2);
+	for (uint64_t power = 1;; power *= 10)
+	{
+		check_u64_conversion(power - 1);
+		check_u64_conversion(power);
+		check_u64_conversion(power + 1);
+		if (power > UINT64_MAX / 10) break;
+	}
+	for (size_t i = 0; i < sizeof(chunk_quotients) / sizeof(chunk_quotients[0]); ++i)
+	{
+		uint64_t base = chunk_quotients[i] * chunk;
+		check_u64_conversion(base - 1);
+		for (size_t j = 0; j < sizeof(chunk_remainders) / sizeof(chunk_remainders[0]); ++j)
+		{
+			if (chunk_remainders[j] <= UINT64_MAX - base)
+				check_u64_conversion(base + chunk_remainders[j]);
+		}
+	}
+	for (int i = 0; i < 4096; ++i)
+	{
+		// Full-width deterministic inputs, plus exact quotient transitions.
+		random_state ^= random_state >> 12;
+		random_state ^= random_state << 25;
+		random_state ^= random_state >> 27;
+		uint64_t value = random_state * UINT64_C(2685821657736338717);
+		check_u64_conversion(value);
+		if (i < 1024)
+		{
+			uint64_t base = (value % (UINT64_MAX / chunk + 1)) * chunk;
+			if (base != 0) check_u64_conversion(base - 1);
+			check_u64_conversion(base);
+			check_u64_conversion(base + 1);
+		}
+	}
+}
+
 static void test_hex_conversion(void)
 {
 	static const uint8_t input[] = {0x00, 0x12, 0xAB, 0xFF};
@@ -451,6 +541,7 @@ int main(void)
 	test_string_precision();
 	test_string_precision_guard_page();
 	test_direct_conversions();
+	test_u64_conversion_boundaries();
 	test_hex_conversion();
 	test_callback_output();
 	test_builder();

@@ -49,8 +49,12 @@ to an executable to select cases, for example:
 ```
 
 The formatter harness covers bounded string slices, varied string lengths,
-dynamic widths, and affixed formats. The harnesses use rotating inputs and
-observable outputs. The math shared-profile operations can be combined using the
+dynamic widths, affixed formats, direct integer and float conversion, and builder
+appends. Integer cases cover 10–20 decimal digits and mixed signed/unsigned values.
+Storage includes string replacement with growth and with reused capacity; math
+includes component-wise vec4 floor/sqrt and ray/sphere hit and miss cases.
+The harnesses use rotating inputs and observable outputs. The math shared-profile
+operations can be combined using the
 [documented weights](../rg_math.md#performance).
 
 The common sink is compiled separately without LTCG to prevent the compiler

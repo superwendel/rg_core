@@ -81,11 +81,19 @@ returning.
 
 The numeric-to-string functions return a pointer to the terminating null byte.
 
+Pass an explicit precision from 0 through 17 to `rg_ftoa` and `rg_dtoa`. The
+zero-value conversion path currently bypasses precision clamping.
+
 ## String builder
 
 `RgBuilder` provides bounded append operations for strings, characters,
 integers, floats, hexadecimal data, and formatted text. Appends truncate to the
 provided capacity while preserving null termination when capacity is nonzero.
+
+Use a positive-capacity buffer for `rg_builder_appendf`; a zero-capacity formatted
+append currently underflows the stored length. Pass precision from 0 through 17
+to `rg_builder_append_float` to avoid overflowing its temporary buffer when
+formatting zero.
 
 ## Performance
 
@@ -124,11 +132,13 @@ to a directory containing `stb_sprintf.h` to include the optional stb
 comparison; the historical comparison used version 1.10. Source include paths
 select the public headers, including when comparing against an older snapshot.
 
-The current harness has 26 cases per backend. It retains the published
-conversion categories and mixed status format, and adds width-only strings,
-bounded output, short slices of long strings, varied lengths, dynamic positive
-and negative widths, and affixed formats. It uses rotating prebuilt inputs.
-Each case receives one warmup
+The current harness retains the published conversion categories and mixed
+status format, and adds width-only strings, bounded output, short slices of
+long strings, varied lengths, dynamic positive and negative widths, and affixed
+formats. It also covers mixed signed and unsigned 64-bit formatting, direct
+integer conversion across 10–20 decimal digits, direct float conversion, and
+builder appends. Direct conversion and builder cases apply to the rg backends.
+It uses rotating prebuilt inputs. Each case receives one warmup
 and seven samples of 262,144 calls. Output buffers and returned lengths are
 checked against libc and consumed outside each timed block. `--validate` checks
 one batch per case without timing. `BENCH` rows report the case, sample index,

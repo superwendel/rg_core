@@ -1811,9 +1811,19 @@ RGINLINE int rg_ray_sphere(const rg_ray* ray, const rg_sphere* sphere, f32* t1, 
 	f32 r2 = sphere->radius * sphere->radius;
 	f32 dscr = r2 - (rx * rx + ry * ry + rz * rz);
 
-	if (dscr < 0.0f)
+	if (dscr <= 0.0f)
 	{
-		return 0;
+		if (dscr < 0.0f)
+		{
+			return 0;
+		}
+		if (ddp == 0.0f)
+		{
+			// A tangent ray starting on the sphere has two zero roots.
+			if (t1) *t1 = 0.0f;
+			if (t2) *t2 = 0.0f;
+			return 1;
+		}
 	}
 
 	f32 root = rg_sqrtf(dscr);

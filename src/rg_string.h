@@ -1085,8 +1085,18 @@ RGINLINE void rgs_copy_n(RgString* dst, const char* src, size_t len)
 
 	if (len > dst->cap)
 	{
-		rgs_reserve(dst, len);
-		if (len > dst->cap) return;
+#ifdef RG_STRING_SECURE
+		if (!dst->arena) return;
+#endif
+		RG_STRING_ASSERT(dst->arena != NULL);
+		if (!dst->arena || len == SIZE_MAX) return;
+		char* data = (char*)rg_arena_alloc_aligned(dst->arena, len + 1, RG_ALIGNOF(char));
+		if (!data) return;
+
+		// The replacement overwrites every byte, so do not preserve old contents.
+		// Arena allocations keep the previous buffer alive if src aliases it.
+		dst->data = data;
+		dst->cap = len;
 	}
 
 	memmove(dst->data, src, len);
