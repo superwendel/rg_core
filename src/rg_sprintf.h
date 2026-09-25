@@ -882,30 +882,24 @@ RGINLINE void rg_flush(rg_sprintf_ctx* ctx)
 	}
 }
 
-// Word-at-a-time strlen - faster than libc for short strings
+// Check short strings byte by byte without requiring readable padding.
+// After 64 nonzero bytes, let the platform strlen scan the remaining tail.
 RGINLINE size_t rg_strlen(const char* s)
 {
-	const char* start = s;
-
-	// Align to 4-byte boundary
-	while ((uintptr_t)s & 3)
-	{
-		if (*s == 0) return (size_t)(s - start);
-		s++;
-	}
-
-	// Scan 4 bytes at a time using null byte detection trick
+	const char* p = s;
 	for (;;)
 	{
-		uint32_t v;
-		memcpy(&v, s, sizeof(v)); // Strict aliasing safe - compilers optimize to direct load
-		if ((v - 0x01010101U) & ~v & 0x80808080U) break;
-		s += 4;
+		if (p[0] == '\0') return (size_t)(p - s) + 0;
+		if (p[1] == '\0') return (size_t)(p - s) + 1;
+		if (p[2] == '\0') return (size_t)(p - s) + 2;
+		if (p[3] == '\0') return (size_t)(p - s) + 3;
+		if (p[4] == '\0') return (size_t)(p - s) + 4;
+		if (p[5] == '\0') return (size_t)(p - s) + 5;
+		if (p[6] == '\0') return (size_t)(p - s) + 6;
+		if (p[7] == '\0') return (size_t)(p - s) + 7;
+		p += 8;
+		if (p - s == 64) return 64 + strlen(p);
 	}
-
-	// Find exact position of null
-	while (*s) s++;
-	return (size_t)(s - start);
 }
 
 // Keep bounded scanning out of the main formatter's register allocation.

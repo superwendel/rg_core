@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -182,6 +183,34 @@ static void check_string_output_modes(const char* format, ...)
 	va_end(args);
 }
 
+static void test_string_exact_heap_objects(void)
+{
+	static const size_t lengths[] = {
+		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+		17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+		63, 64, 65, 127, 128, 129, 511, 512, 1023, 1024
+	};
+	for (size_t offset = 0; offset < 32; ++offset)
+	{
+		for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i)
+		{
+			size_t length = lengths[i];
+			// No readable suffix after the terminator: ASan must catch an
+			// object overread even when the allocator's page remains readable.
+			char* allocation = (char*)malloc(offset + length + 1);
+			CHECK(allocation != NULL);
+			if (allocation == NULL) return;
+			memset(allocation, 'Z', offset);
+			char* text = allocation + offset;
+			for (size_t j = 0; j < length; ++j) text[j] = (char)('a' + j % 26);
+			text[length] = '\0';
+			CHECK(rg_strlen(text) == length);
+			check_string_output_modes("%s", text);
+			free(allocation);
+		}
+	}
+}
+
 static void test_general_string_widths(void)
 {
 	static const size_t lengths[] = {0, 1, 7, 8, 9, 10, 11, 15, 16, 17, 31, 32, 33};
@@ -332,9 +361,7 @@ static void test_string_precision_guard_page(void)
 			check_string_output_modes("%s", text);
 			check_string_output_modes("%.*s", (int)length + 32, text);
 			check_string_output_modes(text);
-#if defined(RG_SPRINTF_ASM_H)
 			CHECK(rg_strlen(text) == length);
-#endif
 			// Conversion/escape and its terminator occupy the last three bytes.
 			char* format = page_end - length - 3;
 			memset(format, 'b', length);
@@ -367,9 +394,7 @@ static void test_string_precision_guard_page(void)
 			check_string_output_modes("%s", text);
 			check_string_output_modes("%.*s", (int)length + 32, text);
 			check_string_output_modes(text);
-#if defined(RG_SPRINTF_ASM_H)
 			CHECK(rg_strlen(text) == length);
-#endif
 			memcpy(text + length, "%s", 3);
 			check_string_output_modes(text, "tail");
 
@@ -599,6 +624,7 @@ int main(void)
 {
 	test_basic_formatting();
 	test_width_precision_and_flags();
+	test_string_exact_heap_objects();
 	test_general_string_widths();
 	test_integer_limits();
 	test_floating_point();
