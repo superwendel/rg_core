@@ -255,6 +255,20 @@ static void test_integer_limits(void)
 	CHECK_LIBC("%lld", (long long)INT64_MAX);
 	CHECK_LIBC("%llu", (unsigned long long)UINT64_MAX);
 	CHECK_LIBC("%zu", (size_t)1234567);
+	// long is 64-bit on Linux x86-64 and 32-bit on Windows x64. Exercise
+	// both unadorned and generic formatting paths against the host libc.
+	CHECK_LIBC("%ld", LONG_MIN);
+	CHECK_LIBC("%ld", LONG_MAX);
+	CHECK_LIBC("value=%+024ld", LONG_MIN);
+	CHECK_LIBC("%lu", ULONG_MAX);
+	CHECK_LIBC("%#lx", ULONG_MAX);
+	CHECK_LIBC("%lo", ULONG_MAX);
+	CHECK_LIBC("%zu", SIZE_MAX);
+	CHECK_LIBC("%td", PTRDIFF_MIN);
+	CHECK_LIBC("%td", PTRDIFF_MAX);
+	CHECK_LIBC("%jd", INTMAX_MIN);
+	CHECK_LIBC("%jd", INTMAX_MAX);
+	CHECK_LIBC("%ju", UINTMAX_MAX);
 }
 
 static void test_floating_point(void)

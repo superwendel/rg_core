@@ -275,14 +275,8 @@ RGINLINE int rg_prof_init(RgProf* prof, RgArena* arena, u32 max_threads, u32 eve
 	prof->max_threads = max_threads;
 	prof->events_per_thread = events_per_thread;
 
-	if ((size_t)max_threads > SIZE_MAX / sizeof(RgProfThreadSlot))
-	{
-		memset(prof, 0, sizeof(*prof));
-		return 0;
-	}
-	size_t thread_slot_bytes = (size_t)max_threads * sizeof(RgProfThreadSlot);
-	prof->thread_slots = (RgProfThreadSlot*)rg_arena_alloc_aligned(
-	    arena, thread_slot_bytes, RG_CACHE_LINE_SIZE);
+	prof->thread_slots = (RgProfThreadSlot*)rg_arena_alloc_array(
+	    arena, sizeof(RgProfThreadSlot), max_threads, RG_CACHE_LINE_SIZE);
 	if (prof->thread_slots == NULL)
 	{
 		arena->used = arena_mark;
@@ -325,22 +319,16 @@ RGINLINE RgProfThread* rg_prof_register_thread(RgProf* prof, const char* name)
 	thread->capacity = prof->events_per_thread;
 	thread->id = index;
 
-	if ((size_t)thread->capacity > SIZE_MAX / sizeof(RgProfEvent))
-	{
-		memset(thread, 0, sizeof(*thread));
-		return NULL;
-	}
-	size_t event_bytes = (size_t)thread->capacity * sizeof(RgProfEvent);
 	size_t arena_mark = prof->arena->used;
-	thread->events = (RgProfEvent*)rg_arena_alloc_aligned(
-	    prof->arena, event_bytes, RG_ALIGNOF(RgProfEvent));
+	thread->events = (RgProfEvent*)rg_arena_alloc_array(
+	    prof->arena, sizeof(RgProfEvent), thread->capacity, RG_ALIGNOF(RgProfEvent));
 	if (thread->events == NULL)
 	{
 		prof->arena->used = arena_mark;
 		memset(thread, 0, sizeof(*thread));
 		return NULL;
 	}
-	memset(thread->events, 0, event_bytes);
+	memset(thread->events, 0, (size_t)thread->capacity * sizeof(RgProfEvent));
 
 	prof->thread_count = index + 1u;
 	return thread;
@@ -490,21 +478,19 @@ RGINLINE int rg_prof_history_init(RgProfHistory* history, RgArena* arena,
 		return 0;
 	}
 
-	if ((size_t)frame_capacity > SIZE_MAX / sizeof(RgProfFrameSample)) return 0;
 	if (section_count > 0u && (size_t)frame_capacity > SIZE_MAX / section_count) return 0;
 	size_t section_cells = (size_t)frame_capacity * section_count;
 	if (section_cells > SIZE_MAX / sizeof(f32)) return 0;
 
 	size_t arena_mark = arena->used;
-	size_t frame_bytes = (size_t)frame_capacity * sizeof(RgProfFrameSample);
-	history->frames = (RgProfFrameSample*)rg_arena_alloc_aligned(
-	    arena, frame_bytes, RG_ALIGNOF(RgProfFrameSample));
+	history->frames = (RgProfFrameSample*)rg_arena_alloc_array(
+	    arena, sizeof(RgProfFrameSample), frame_capacity, RG_ALIGNOF(RgProfFrameSample));
 	if (history->frames == NULL) goto fail;
 
 	if (section_cells > 0u)
 	{
-		history->section_ms = (f32*)rg_arena_alloc_aligned(
-		    arena, section_cells * sizeof(f32), RG_ALIGNOF(f32));
+		history->section_ms = (f32*)rg_arena_alloc_array(
+		    arena, sizeof(f32), section_cells, RG_ALIGNOF(f32));
 		if (history->section_ms == NULL) goto fail;
 	}
 

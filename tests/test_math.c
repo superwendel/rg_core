@@ -59,6 +59,14 @@ static void test_scalar(void)
 	CHECK_CLOSE(rg_sqrtf(81.0f), 9.0f, 2e-3f);
 	CHECK_CLOSE(rg_sinf(RG_HALF_PI), 1.0f, 1e-5f);
 	CHECK_CLOSE(rg_cosf(RG_PI), -1.0f, 1e-5f);
+	const f32 angles[] = {-RG_PI, -RG_HALF_PI, -0.375f, 0.0f, 0.375f, RG_HALF_PI, RG_PI};
+	for (size_t i = 0; i < RG_ARRAY_COUNT(angles); ++i)
+	{
+		f32 sine, cosine;
+		rg_sincosf(angles[i], &sine, &cosine);
+		CHECK_CLOSE(sine, sinf(angles[i]), 2e-5f);
+		CHECK_CLOSE(cosine, cosf(angles[i]), 2e-5f);
+	}
 	CHECK(rg_imin(-4, 3) == -4);
 	CHECK(rg_imax(-4, 3) == 3);
 }

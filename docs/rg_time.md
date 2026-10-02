@@ -24,6 +24,13 @@ unity builds or separately compiled C translation units.
 Native backends are included for Windows, Linux, and macOS. Other platforms
 can provide the four custom hooks described below.
 
+For strict C99/C11 builds on Linux, expose the POSIX declarations before any
+system headers are included. The native build script supplies
+`-D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L`; use the same compiler flags in
+your application. Defining feature macros after including `rg_defs.h` or other
+system headers is too late. Run `./build.sh test_time` to check both the native
+and custom backends.
+
 Call `rg_time_init` once before starting worker threads. It caches the invariant
 platform frequency so subsequent conversions are arithmetic-only. Because the
 header has internal linkage, separately compiled translation units that need

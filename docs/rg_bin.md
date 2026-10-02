@@ -125,7 +125,7 @@ Define options before the first include:
 ```c
 #define RG_BIN_ASSERT(condition)    // Custom assertion macro
 #define RG_BIN_LITTLE_ENDIAN 1      // Override detected host endianness
-#define RG_BIN_FAST_UNALIGNED 1     // Opt into direct unaligned access
+#define RG_BIN_FAST_UNALIGNED 1     // Opt into compiler-specific unaligned access
 #include "rg_bin.h"
 ```
 
@@ -133,10 +133,12 @@ Define options before the first include:
 Endianness is otherwise detected from compiler macros and the platform and
 architecture definitions in `rg_defs.h`.
 
-`RG_BIN_FAST_UNALIGNED` affects little-endian integer loads and stores. It uses
-direct typed pointer access and should be enabled only when the target permits
-unaligned access and the project accepts its effective-type and aliasing
-requirements. The portable `memcpy` path remains the default.
+`RG_BIN_FAST_UNALIGNED` affects integer loads and stores on little-endian hosts.
+GCC and Clang use fixed-size `memcpy` with either setting, so arbitrary byte
+alignment and aliasing remain valid C. Optimized x86-64 builds can lower these
+copies to single loads and stores. Other compilers retain the opt-in direct
+typed pointer path, which requires the project to accept the target's alignment
+and aliasing assumptions. The portable `memcpy` path remains the default.
 
 ## Input safety
 
@@ -154,4 +156,8 @@ build.bat test_bin
 ```
 
 The target runs the C public API suite against the default portable path, the
-opt-in direct unaligned path, and the bytewise path.
+configured fast path, and the bytewise path.
+
+On Linux, use `./build.sh test_bin` for the same configuration matrix and
+`./build.sh test_ubsan` to check the default and enabled-fast paths for undefined
+behavior.

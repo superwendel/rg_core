@@ -4,6 +4,7 @@
 .globl rg_strlen_asm
 .type rg_strlen_asm, @function
 rg_strlen_asm:
+	.cfi_startproc
 	# Check the first unaligned probe, then align all subsequent loads.
 	mov rax, rdi
 	mov edx, eax
@@ -43,6 +44,7 @@ rg_strlen_asm:
 .Lscan_scalar_found:
 	sub rax, rdi
 	ret
+	.cfi_endproc
 .size rg_strlen_asm, .-rg_strlen_asm
 
 .p2align 2
@@ -50,8 +52,11 @@ rg_strlen_asm:
 .globl rg_utoa_asm
 .type rg_utoa_asm, @function
 rg_utoa_asm:
+	.cfi_startproc
 	mov r9, rcx
 	mov eax, edi
+	# SysV leaves the upper 32 bits of the int digit count unspecified.
+	movsxd rdx, edx
 	lea r10, [rsi + rdx]
 	mov r11, r10
 	mov byte ptr [r10], 0
@@ -124,15 +129,20 @@ rg_utoa_asm:
 .Lutoa_done:
 	mov rax, r11
 	ret
+	.cfi_endproc
 .size rg_utoa_asm, .-rg_utoa_asm
 
 .globl rg_u64toa_asm
 .type rg_u64toa_asm, @function
 rg_u64toa_asm:
+	.cfi_startproc
 	push r15
+	.cfi_def_cfa_offset 16
+	.cfi_offset r15, -16
 
 	mov r9, rcx
 	mov rax, rdi
+	movsxd rdx, edx
 	lea r10, [rsi + rdx]
 	mov r11, r10
 	mov byte ptr [r10], 0
@@ -217,7 +227,10 @@ rg_u64toa_asm:
 .Lu64_done:
 	mov rax, r11
 	pop r15
+	.cfi_def_cfa_offset 8
+	.cfi_restore r15
 	ret
+	.cfi_endproc
 .size rg_u64toa_asm, .-rg_u64toa_asm
 
 .section .note.GNU-stack,"",@progbits

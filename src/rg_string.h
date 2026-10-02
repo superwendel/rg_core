@@ -1082,6 +1082,7 @@ RGINLINE void rgs_copy_n(RgString* dst, const char* src, size_t len)
 		rgs_clear(dst);
 		return;
 	}
+	if (len == SIZE_MAX) return;
 
 	if (len > dst->cap)
 	{
@@ -1089,7 +1090,7 @@ RGINLINE void rgs_copy_n(RgString* dst, const char* src, size_t len)
 		if (!dst->arena) return;
 #endif
 		RG_STRING_ASSERT(dst->arena != NULL);
-		if (!dst->arena || len == SIZE_MAX) return;
+		if (!dst->arena) return;
 		char* data = (char*)rg_arena_alloc_aligned(dst->arena, len + 1, RG_ALIGNOF(char));
 		if (!data) return;
 

@@ -18,6 +18,24 @@ The Linux x64 helper also requires an AVX2-capable CPU. Compile
 `src/asm/sprintf/linux_x64/rg_sprintf_asm_x64.S` and define `RG_SPRINTF_HAS_ASM`
 to enable it.
 
+For example, from the repository root, build a C application that includes the
+hybrid header with GCC or Clang:
+
+```sh
+cc -std=c11 -O2 -mavx2 -DRG_SPRINTF_HAS_ASM \
+   -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L -Isrc \
+   example.c src/asm/sprintf/linux_x64/rg_sprintf_asm_x64.S \
+   -lm -o example
+```
+
+The helper uses the Linux System V ABI and ELF object format. Use the MASM
+source for Windows. `-mavx2` alone does not select assembly on Linux, and
+`RG_SPRINTF_HAS_ASM` must only be defined when its helper object is linked.
+There is no runtime CPU dispatch in the library: binaries that use this helper
+require an AVX2-capable CPU. `./build.sh test_sprintf` checks portable and
+fallback configurations, plus assembly and its ABI regression test when the
+host supports AVX2.
+
 Use the portable implementation directly when no assembly object is desired:
 
 ```c

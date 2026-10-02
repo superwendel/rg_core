@@ -27,6 +27,40 @@ produce different results.
 
 ## Current regression benchmarks
 
+On Linux x86-64:
+
+```sh
+./build.sh bench_regression
+./build.sh bench_math
+./build.sh bench_sprintf
+./build.sh bench_storage
+./build.sh bench_input
+./build.sh bench_prof
+```
+
+`./build.sh bench` runs the algorithm, hash, and container suites. Set
+`RG_BENCH_BUILD_ONLY=1` to compile without running. Linux executables are written
+under `.bench-build/linux/current`, for example:
+
+```sh
+RG_BENCH_BUILD_ONLY=1 ./build.sh bench_sprintf
+.bench-build/linux/current/bench_sprintf --validate
+RG_BENCH_BUILD_ONLY=1 ./build.sh bench_storage
+.bench-build/linux/current/bench_storage =storage.rng.u32.constant10
+```
+
+The Linux builds use baseline x86-64 compiler settings. On an AVX2-capable host,
+the formatter suite also builds and runs a separately compiled assembly backend;
+otherwise it lists and runs only the C backend. `RG_BUILD_SIMD=off` omits the
+assembly backend. SDL3 is discovered through `pkg-config` for the input suite.
+`RG_BENCH_DEPS` enables locally available comparison headers; the scripts do not
+download dependencies. The output sink is compiled separately without LTO.
+
+The process-median and paired comparison reporting scripts below remain Windows
+tools. Linux commands currently build and run the suites and preserve their raw
+output format. Published Windows results should be treated as historical
+measurements, rather than baselines for this machine.
+
 From a Visual Studio Developer Command Prompt:
 
 ```bat

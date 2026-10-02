@@ -13,7 +13,7 @@
 // OPTIONS:
 //   #define RG_BIN_ASSERT(condition) - Custom assert macro (default: assert)
 //   #define RG_BIN_LITTLE_ENDIAN     - Override host endianness (0 or 1)
-//   #define RG_BIN_FAST_UNALIGNED    - Use direct unaligned access (default: 0)
+//   #define RG_BIN_FAST_UNALIGNED    - Request direct unaligned access (default: 0)
 //
 // NOTES:
 //   - Raw loads, stores, and pointer cursors require caller-provided capacity.
@@ -66,6 +66,10 @@
 #if RG_BIN_FAST_UNALIGNED != 0 && RG_BIN_FAST_UNALIGNED != 1
 #error RG_BIN_FAST_UNALIGNED must be 0 or 1
 #endif
+
+// GCC and Clang optimize fixed-size memcpy without violating alignment or
+// aliasing rules, including when RG_BIN_FAST_UNALIGNED is enabled. MSVC retains
+// the optional direct-access path.
 
 #define RG_BIN_UVARINT32_MAX_BYTES 5u
 #define RG_BIN_UVARINT64_MAX_BYTES 10u
@@ -625,7 +629,7 @@ RGINLINE void rg_bin_store_u8(void* ptr, u8 value)
 #if RG_BIN_LITTLE_ENDIAN
 RGINLINE u16 rg_bin_load_u16_le(const void* ptr)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	return *(const u16*)ptr;
 #else
 	u16 value;
@@ -636,7 +640,7 @@ RGINLINE u16 rg_bin_load_u16_le(const void* ptr)
 
 RGINLINE u16 rg_bin_load_u16_be(const void* ptr)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	return rg_bin_swap16(*(const u16*)ptr);
 #else
 	u16 value;
@@ -647,7 +651,7 @@ RGINLINE u16 rg_bin_load_u16_be(const void* ptr)
 
 RGINLINE void rg_bin_store_u16_le(void* ptr, u16 value)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	*(u16*)ptr = value;
 #else
 	memcpy(ptr, &value, sizeof(value));
@@ -656,7 +660,7 @@ RGINLINE void rg_bin_store_u16_le(void* ptr, u16 value)
 
 RGINLINE void rg_bin_store_u16_be(void* ptr, u16 value)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	*(u16*)ptr = rg_bin_swap16(value);
 #else
 	value = rg_bin_swap16(value);
@@ -666,7 +670,7 @@ RGINLINE void rg_bin_store_u16_be(void* ptr, u16 value)
 
 RGINLINE u32 rg_bin_load_u32_le(const void* ptr)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	return *(const u32*)ptr;
 #else
 	u32 value;
@@ -677,7 +681,7 @@ RGINLINE u32 rg_bin_load_u32_le(const void* ptr)
 
 RGINLINE u32 rg_bin_load_u32_be(const void* ptr)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	return rg_bin_swap32(*(const u32*)ptr);
 #else
 	u32 value;
@@ -688,7 +692,7 @@ RGINLINE u32 rg_bin_load_u32_be(const void* ptr)
 
 RGINLINE void rg_bin_store_u32_le(void* ptr, u32 value)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	*(u32*)ptr = value;
 #else
 	memcpy(ptr, &value, sizeof(value));
@@ -697,7 +701,7 @@ RGINLINE void rg_bin_store_u32_le(void* ptr, u32 value)
 
 RGINLINE void rg_bin_store_u32_be(void* ptr, u32 value)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	*(u32*)ptr = rg_bin_swap32(value);
 #else
 	value = rg_bin_swap32(value);
@@ -707,7 +711,7 @@ RGINLINE void rg_bin_store_u32_be(void* ptr, u32 value)
 
 RGINLINE u64 rg_bin_load_u64_le(const void* ptr)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	return *(const u64*)ptr;
 #else
 	u64 value;
@@ -718,7 +722,7 @@ RGINLINE u64 rg_bin_load_u64_le(const void* ptr)
 
 RGINLINE u64 rg_bin_load_u64_be(const void* ptr)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	return rg_bin_swap64(*(const u64*)ptr);
 #else
 	u64 value;
@@ -729,7 +733,7 @@ RGINLINE u64 rg_bin_load_u64_be(const void* ptr)
 
 RGINLINE void rg_bin_store_u64_le(void* ptr, u64 value)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	*(u64*)ptr = value;
 #else
 	memcpy(ptr, &value, sizeof(value));
@@ -738,7 +742,7 @@ RGINLINE void rg_bin_store_u64_le(void* ptr, u64 value)
 
 RGINLINE void rg_bin_store_u64_be(void* ptr, u64 value)
 {
-#if RG_BIN_FAST_UNALIGNED
+#if RG_BIN_FAST_UNALIGNED && !(RG_COMPILER_GCC || RG_COMPILER_CLANG)
 	*(u64*)ptr = rg_bin_swap64(value);
 #else
 	value = rg_bin_swap64(value);

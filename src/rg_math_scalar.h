@@ -1047,11 +1047,7 @@ RGINLINE f32 rg_cosf_fast(f32 x)
 #if __has_builtin(__builtin_sincosf)
 #define RG_MATH_HAS_BUILTIN_SINCOSF 1
 #endif
-#endif
-#endif
-
-#if !defined(RG_MATH_HAS_BUILTIN_SINCOSF)
-#if defined(__GNUC__) && !defined(_MSC_VER)
+#elif RG_COMPILER_GCC
 #define RG_MATH_HAS_BUILTIN_SINCOSF 1
 #endif
 #endif

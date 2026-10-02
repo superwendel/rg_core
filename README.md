@@ -220,7 +220,39 @@ results are machine- and workload-specific, so see the complete
 
 ## Build, test, and benchmark
 
-From a Visual Studio Developer Command Prompt:
+On Linux x86-64, with GCC C/C++ compilers and Bash available:
+
+```sh
+./build.sh test
+./build.sh test_ubsan
+./build.sh bench
+./build.sh bench_regression
+```
+
+`test` is the default target. Individual modules and benchmark suites can be
+selected with targets such as `test_mem`, `test_sprintf`, `bench_math`, and
+`bench_storage`. Test output goes under `.test-build/linux`; benchmark binaries
+go under `.bench-build/linux/current`. Use `./build.sh clean` to remove only
+these Linux build outputs.
+
+The Linux test runner uses C11 with POSIX feature macros and checks the
+portable, secure, configured, and custom-backend variants. Baseline builds use
+the normal x86-64 compiler target. Separate AVX2 and FMA tests run when the host
+supports them; the formatter assembly is linked explicitly in its own variants.
+Set `RG_BUILD_SIMD=off` to run without those accelerated variants. Use `CC` and
+`CXX` to select the C and C++ compilers; they default to `gcc` and `g++`.
+
+SDL3 is discovered through `pkg-config --cflags --libs sdl3`. If installed in a
+custom prefix, set `PKG_CONFIG_PATH` to its pkg-config directory. Aggregate
+targets report skipped SDL suites when SDL3 is unavailable; explicit SDL targets
+require it. No SDL3 dependency is needed for the other modules.
+
+For your own strict C99/C11 Linux builds, define `_DEFAULT_SOURCE` and
+`_POSIX_C_SOURCE=200809L` in compiler flags before including any system headers.
+Link `-lm` when using math helpers. The Linux script supplies these settings.
+See the [formatter guide](docs/rg_sprintf.md#integration) for assembly integration.
+
+On Windows, from a Visual Studio Developer Command Prompt:
 
 ```bat
 build.bat test

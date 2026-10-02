@@ -50,7 +50,7 @@ scan_scalar_found:
 	ret
 rg_strlen_asm ENDP
 
-; Keep the existing integer helpers at their original offsets.
+; Keep the first integer helper aligned after the string scanner.
 ALIGN 4
 
 ; char* rg_utoa_asm(uint32_t value, char* buf, int digits, const char* digit_pairs)
@@ -60,6 +60,7 @@ rg_utoa_asm PROC
 	; r8d = digits
 	; r9  = digit_pairs
 	mov eax, ecx
+	movsxd r8, r8d
 	lea r10, [rdx + r8]
 	mov r11, r10
 	mov byte ptr [r10], 0
@@ -139,6 +140,7 @@ rg_u64toa_asm PROC
 	push r15
 
 	mov rax, rcx
+	movsxd r8, r8d
 	lea r10, [rdx + r8]
 	mov r11, r10
 	mov byte ptr [r10], 0
@@ -228,6 +230,7 @@ rg_u64toa_asm ENDP
 
 ; Preserve the original helper block footprint. Shifting the following code
 ; regresses unrelated formatter paths even though this conversion is faster.
-DB 41 DUP (0CCh)
+; The two digit-count extensions consume six bytes of the original padding.
+DB 35 DUP (0CCh)
 
 END

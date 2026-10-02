@@ -1887,6 +1887,8 @@ RGINLINE int rg_is_pseudo_inf(double value)
 	{
 		return bits.u == huge.u;
 	}
+#else
+	(void)value;
 #endif
 	return 0;
 }

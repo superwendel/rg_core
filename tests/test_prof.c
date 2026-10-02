@@ -197,6 +197,31 @@ static void test_allocation_rollback(void)
 	TEST_ASSERT(rg_prof_register_thread(&prof, "main") == NULL, "register allocation failure");
 	TEST_ASSERT(arena.used == used_before, "register rollback");
 	TEST_ASSERT(prof.thread_count == 0u, "failed registration not published");
+	TEST_ASSERT(prof.thread_slots[0].thread.events == NULL, "failed thread cleared");
+
+	RgProf failed_prof;
+	memset(&failed_prof, 0xa5, sizeof(failed_prof));
+	TEST_ASSERT(!rg_prof_init(&failed_prof, &arena, UINT32_MAX, 8), "oversized thread allocation failure");
+	TEST_ASSERT(arena.used == used_before, "init rollback");
+	TEST_ASSERT(failed_prof.arena == NULL && failed_prof.thread_slots == NULL &&
+	            failed_prof.max_threads == 0u, "failed profiler cleared");
+
+	prof.events_per_thread = UINT32_MAX;
+	TEST_ASSERT(rg_prof_register_thread(&prof, "huge") == NULL, "oversized event allocation failure");
+	TEST_ASSERT(arena.used == used_before && prof.thread_count == 0u, "oversized register rollback");
+
+	RgProfFrameSample frame_storage;
+	RgArena history_arena = {(char*)&frame_storage, sizeof(frame_storage), 0u, sizeof(frame_storage)};
+	RgProfHistory history;
+	const char* sections[] = {"main"};
+	TEST_ASSERT(!rg_prof_history_init(&history, &history_arena, 1, sections, 1),
+	            "history section allocation failure");
+	TEST_ASSERT(history_arena.used == 0u, "history rolls back first allocation");
+	TEST_ASSERT(history.frames == NULL && history.section_ms == NULL && history.capacity == 0u,
+	            "failed history cleared");
+	TEST_ASSERT(!rg_prof_history_init(&history, &history_arena, UINT32_MAX, NULL, 0),
+	            "oversized frame allocation failure");
+	TEST_ASSERT(history_arena.used == 0u && history.frames == NULL, "oversized history rollback");
 
 	TEST_PASS("allocation rollback");
 }
