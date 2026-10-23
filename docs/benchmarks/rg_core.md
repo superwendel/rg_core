@@ -71,11 +71,11 @@ integer-key radix contracts exposed by `rg_algo`.
 
 ## rg_hash
 
-The map benchmark inserts, finds, or removes 500,000 shuffled, unique `uint32`
-keys. Map construction is outside find and remove timings. `rg_hash` and
-`std::unordered_map` reserve for the full input before insert timing;
-`stb_ds` 0.67 grows through its public map API. The standard map uses a 0.7
-maximum load factor to match `rg_hash`.
+The historical Windows run inserted, found, or removed 500,000 shuffled,
+unique `uint32` keys, with construction outside the find and remove timings.
+`rg_hash` and `std::unordered_map` reserved for the full input before insert
+timing; `stb_ds` 0.67 grew through its public map API. The standard map used a
+0.7 maximum load factor to match `rg_hash`.
 
 | Operation | rg_hash | `std::unordered_map` | `stb_ds` 0.67 |
 | --- | ---: | ---: | ---: |
@@ -86,6 +86,24 @@ maximum load factor to match `rg_hash`.
 The `std::unordered_map`-to-`rg_hash` elapsed-time ratios were 3.1x for
 insertion and 3.0x for removal. The `stb_ds`-to-`rg_hash` ratios were 2.1x for
 insertion and 3.0x for removal.
+
+That find case understated `std::unordered_map` on libstdc++, where
+`std::hash<uint32_t>` is the identity and lookups in insertion order read the
+sequentially allocated nodes as a prefetchable stream. On Linux with GCC 13 or
+Clang 18 the original `rg_hash_u32` map lost that find case by 1.3x to 2.4x.
+The benchmark now runs 4,096, 65,536, and 500,000 entries and looks keys up in
+insertion order, in an independent shuffled order, and for keys never
+inserted, reporting nanoseconds per operation. The table hash also changed:
+`rg_hash_u32_fast` (one multiply) replaces the three-multiply avalanche hash as
+the recommended integer-key hash, 10 to 67 percent faster per operation. See
+[`rg_hash.md`](../rg_hash.md#performance) for the current Linux results. The
+flat table leads shuffled lookups, missing keys, insertion, and removal at
+every size under both compilers; `std::unordered_map` keeps the large
+insertion-order lookup on both compilers and, under Clang, the insertion-order
+lookups at the smaller sizes as well. Every timed pass is checksummed against
+its expected result, including each insertion's and removal's reported
+outcome; samples are calibrated to at least 20 ms; and the implementation
+order rotates between samples.
 
 ## rg_containers
 

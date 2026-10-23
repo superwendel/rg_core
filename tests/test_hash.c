@@ -41,6 +41,8 @@ RG_HASH_SET_DEFINE(uint32_t, U32Set, rg_hash_u32, rg_hash_eq_u32);
 RG_HASH_SET_DEFINE(uint32_t, CollisionSet, test_zero_hash, rg_hash_eq_u32);
 RG_HASH_MAP_DEFINE(uint32_t, uint32_t, ProbeMap, test_identity_hash, rg_hash_eq_u32);
 RG_HASH_SET_DEFINE(uint32_t, ProbeSet, test_identity_hash, rg_hash_eq_u32);
+RG_HASH_MAP_DEFINE(uint32_t, uint32_t, FastMap, rg_hash_u32_fast, rg_hash_eq_u32);
+RG_HASH_SET_DEFINE(uint64_t, FastSet, rg_hash_u64_fast, rg_hash_eq_u64);
 
 static RgArena arena;
 
@@ -74,6 +76,19 @@ static void test_hash_functions(void)
 
 	int value = 42;
 	CHECK(rg_hash_ptr(&value) == rg_hash_u64((uint64_t)(uintptr_t)&value));
+	CHECK(rg_hash_ptr_fast(&value) == rg_hash_u64_fast((uint64_t)(uintptr_t)&value));
+	CHECK(rg_hash_u32_fast(0) == 0 && rg_hash_u64_fast(0) == 0);
+	CHECK(rg_hash_u32_fast(1) == UINT64_C(0x9E3779B9));
+	CHECK(rg_hash_u32_fast(1) != rg_hash_u32_fast(2));
+	CHECK(rg_hash_u64_fast(1) == UINT64_C(0x9E3779B97F4A7C15));
+	{
+		/* The wide multiply must agree with its portable form. */
+		uint64_t low = 0;
+		uint64_t high = rg_hash_mul_u64_wide(UINT64_C(0xFFFFFFFFFFFFFFFF), UINT64_C(0xFFFFFFFFFFFFFFFF), &low);
+		CHECK(high == UINT64_C(0xFFFFFFFFFFFFFFFE) && low == 1);
+		high = rg_hash_mul_u64_wide(UINT64_C(0x123456789ABCDEF0), UINT64_C(0x9E3779B97F4A7C15), &low);
+		CHECK(high == UINT64_C(0x0B403F44F1289150) && low == UINT64_C(0xC93A7B79AEDA89B0));
+	}
 	CHECK(rg_hash_eq_u32(7, 7));
 	CHECK(!rg_hash_eq_u64(7, 8));
 	CHECK(rg_hash_eq_ptr(&value, &value));
@@ -357,6 +372,175 @@ static void test_collision_probe_and_exhausted_update(void)
 	}
 }
 
+/* Count the slots a key pattern occupies under an 8,192-slot mask. Random keys
+ * would fill about 3,220 of them; structured keys must not collapse. */
+static uint32_t test_distinct_slots_u64(const uint64_t* keys, size_t count)
+{
+	static uint8_t seen[8192];
+	uint32_t distinct = 0;
+	memset(seen, 0, sizeof(seen));
+	for (size_t i = 0; i < count; i++)
+	{
+		uint32_t slot = (uint32_t)(rg_hash_u64_fast(keys[i]) & 8191u);
+		distinct += seen[slot] == 0;
+		seen[slot] = 1;
+	}
+	return distinct;
+}
+
+static uint32_t test_distinct_slots_u32(const uint32_t* keys, size_t count)
+{
+	static uint8_t seen[8192];
+	uint32_t distinct = 0;
+	memset(seen, 0, sizeof(seen));
+	for (size_t i = 0; i < count; i++)
+	{
+		uint32_t slot = (uint32_t)(rg_hash_u32_fast(keys[i]) & 8191u);
+		distinct += seen[slot] == 0;
+		seen[slot] = 1;
+	}
+	return distinct;
+}
+
+static void test_fast_hash_distribution(void)
+{
+	enum
+	{
+		COUNT = 4096,
+		MIN_DISTINCT = 2800
+	};
+	static uint64_t keys64[COUNT];
+	static uint32_t keys32[COUNT];
+
+	/* Keys differing only above bit 32: a bare multiply leaves the low bits constant. */
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = (i << 48) | 7u;
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = i << 32;
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	/* Aligned addresses: constant low bits, varying middle bits. */
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = UINT64_C(0x7f0000000000) + i * 16u;
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = UINT64_C(0x5555f000) + i * 64u;
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = i;
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = i * 4096u;
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	/* Upper and middle bits moving together cancel under a fold-then-multiply hash. */
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = (i << 48) | (i << 16) | 7u;
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	/* Packed float pairs and generation/index identifiers. */
+	for (uint32_t i = 0; i < COUNT; i++)
+	{
+		float x = (float)i;
+		float y = (float)i * 0.5f;
+		uint32_t xb, yb;
+		memcpy(&xb, &x, sizeof(xb));
+		memcpy(&yb, &y, sizeof(yb));
+		keys64[i] = ((uint64_t)xb << 32) | yb;
+	}
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	for (uint32_t i = 0; i < COUNT; i++)
+	{
+		float x = (float)i;
+		uint32_t xb;
+		memcpy(&xb, &x, sizeof(xb));
+		keys64[i] = ((uint64_t)xb << 32) | xb;
+	}
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = ((i % 7u) << 32) | (i / 7u);
+	CHECK(test_distinct_slots_u64(keys64, COUNT) >= MIN_DISTINCT);
+
+	for (uint32_t i = 0; i < COUNT; i++) keys32[i] = (i << 16) | 7u;
+	CHECK(test_distinct_slots_u32(keys32, COUNT) >= MIN_DISTINCT);
+	for (uint32_t i = 0; i < COUNT; i++) keys32[i] = i;
+	CHECK(test_distinct_slots_u32(keys32, COUNT) >= MIN_DISTINCT);
+	for (uint32_t i = 0; i < COUNT; i++) keys32[i] = i * 64u;
+	CHECK(test_distinct_slots_u32(keys32, COUNT) >= MIN_DISTINCT);
+	for (uint32_t i = 0; i < COUNT; i++) keys32[i] = i * 2654435761u;
+	CHECK(test_distinct_slots_u32(keys32, COUNT) >= MIN_DISTINCT);
+
+	/* The table itself must stay near one probe per lookup on structured keys. */
+	rg_arena_reset(&arena);
+	FastSet set;
+	rg_hash_set_init(FastSet, &set, &arena);
+	CHECK(rg_hash_set_reserve(FastSet, &set, COUNT));
+	for (uint64_t i = 0; i < COUNT; i++) keys64[i] = (i << 48) | 7u;
+	for (size_t i = 0; i < COUNT; i++) CHECK(rg_hash_set_try_insert(FastSet, &set, keys64[i]) == 1);
+	size_t probes = 0;
+	for (size_t i = 0; i < COUNT; i++)
+	{
+		uint64_t hash = rg_hash_prepare(rg_hash_u64_fast(keys64[i]));
+		size_t mask = set.cap - 1;
+		size_t idx = (size_t)(hash & mask);
+		probes++;
+		while (!(set.entries[idx].hash == hash && set.entries[idx].key == keys64[i]))
+		{
+			idx = (idx + 1) & mask;
+			probes++;
+		}
+	}
+	CHECK(probes < (size_t)COUNT * 3u);
+}
+
+static void test_fast_hash_tables(void)
+{
+	enum
+	{
+		KEY_COUNT = 2048,
+		OP_COUNT = 40000
+	};
+	uint8_t present[KEY_COUNT] = {0};
+	uint32_t expected_values[KEY_COUNT] = {0};
+	uint32_t state = UINT32_C(0x0badf00d);
+
+	rg_arena_reset(&arena);
+	FastMap map;
+	FastSet set;
+	rg_hash_map_init(FastMap, &map, &arena);
+	rg_hash_set_init(FastSet, &set, &arena);
+
+	for (size_t i = 0; i < OP_COUNT; i++)
+	{
+		uint32_t key = rng_next(&state) & (KEY_COUNT - 1);
+		uint32_t value = rng_next(&state);
+		uint32_t action = rng_next(&state) % 3u;
+		/* Zero keys exercise the zero-hash remapping of both fast functions. */
+		uint64_t set_key = (uint64_t)key << 20;
+		if (action == 0)
+		{
+			int is_new = 0;
+			rg_hash_map_put(FastMap, &map, key, value, &is_new);
+			CHECK(is_new == (present[key] == 0));
+			CHECK(rg_hash_set_try_insert(FastSet, &set, set_key) == (present[key] == 0));
+			present[key] = 1;
+			expected_values[key] = value;
+		}
+		else if (action == 1)
+		{
+			int removed = 0;
+			rg_hash_map_remove(FastMap, &map, key, &removed);
+			CHECK(removed == (present[key] != 0));
+			rg_hash_set_remove(FastSet, &set, set_key, &removed);
+			CHECK(removed == (present[key] != 0));
+			present[key] = 0;
+		}
+		else
+		{
+			uint32_t* found = rg_hash_map_get_ptr(FastMap, &map, key);
+			CHECK((found != NULL) == (present[key] != 0));
+			if (found != NULL)
+				CHECK(*found == expected_values[key]);
+			CHECK(rg_hash_set_contains(FastSet, &set, set_key) == (present[key] != 0));
+		}
+	}
+	size_t expected_count = 0;
+	for (size_t key = 0; key < KEY_COUNT; key++)
+		expected_count += present[key] != 0;
+	CHECK(rg_hash_map_count(&map) == expected_count);
+	CHECK(rg_hash_set_count(&set) == expected_count);
+}
+
 static void test_allocation_failure(void)
 {
 	RgArena tiny = rg_arena_create(KB(1));
@@ -409,6 +593,8 @@ int main(void)
 	test_set_random();
 	test_set_collisions();
 	test_collision_probe_and_exhausted_update();
+	test_fast_hash_distribution();
+	test_fast_hash_tables();
 	test_allocation_failure();
 
 	rg_arena_free(&arena);

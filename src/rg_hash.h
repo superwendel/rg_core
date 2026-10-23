@@ -6,7 +6,7 @@
 // USAGE:
 //   #include "rg_hash.h"
 //
-//   RG_HASH_MAP_DEFINE(uint32_t, float, U32FloatMap, rg_hash_u32, rg_hash_eq_u32);
+//   RG_HASH_MAP_DEFINE(uint32_t, float, U32FloatMap, rg_hash_u32_fast, rg_hash_eq_u32);
 //   U32FloatMap map;
 //   rg_hash_map_init(U32FloatMap, &map, &arena);
 //   rg_hash_map_put(U32FloatMap, &map, 42, 3.14f, NULL);
@@ -33,6 +33,15 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#if !defined(RG_HASH_FORCE_PORTABLE_MUL128)
+#if RG_COMPILER_MSVC && RG_ARCH_X64
+#include <intrin.h>
+#define RG_HASH_USE_UMUL128 1
+#elif defined(__SIZEOF_INT128__)
+#define RG_HASH_USE_INT128 1
+#endif
+#endif
 
 // =============================================================================
 // CONFIGURATION
@@ -112,6 +121,37 @@ RGINLINE uint64_t rg_hash_u64(uint64_t value);
  * @return 64-bit hash
  */
 RGINLINE uint64_t rg_hash_ptr(const void* ptr);
+
+/**
+ * @brief Hash a 32-bit integer for a power-of-two hash table
+ * @details One multiply; the result's low bits are well mixed, which is what
+ *          the table's mask consumes. Cheaper than rg_hash_u32 and intended as
+ *          the hash function for integer-keyed maps and sets. Not stable for
+ *          persistent identifiers: use rg_hash_u32 for values that are stored.
+ * @param value Input value
+ * @return 64-bit hash
+ */
+RGINLINE uint64_t rg_hash_u32_fast(uint32_t value);
+
+/**
+ * @brief Hash a 64-bit integer for a power-of-two hash table
+ * @details The high and low halves of the full 128-bit product with an odd
+ *          constant, XORed together: one multiply instruction on x86-64 and
+ *          AArch64. Every input bit reaches every output bit, so keys that
+ *          differ only in their upper bits (tagged values, packed pairs,
+ *          aligned pointers) spread as well as random keys. See
+ *          rg_hash_u32_fast for the intended use.
+ * @param value Input value
+ * @return 64-bit hash
+ */
+RGINLINE uint64_t rg_hash_u64_fast(uint64_t value);
+
+/**
+ * @brief Hash a pointer for a power-of-two hash table; see rg_hash_u64_fast
+ * @param ptr Pointer to hash
+ * @return 64-bit hash
+ */
+RGINLINE uint64_t rg_hash_ptr_fast(const void* ptr);
 
 /**
  * @brief Equality helpers for common key types
@@ -802,6 +842,60 @@ RGINLINE uint64_t rg_hash_u64(uint64_t value)
 RGINLINE uint64_t rg_hash_ptr(const void* ptr)
 {
 	return rg_hash_u64((uint64_t)(uintptr_t)ptr);
+}
+
+RGINLINE uint64_t rg_hash_u32_fast(uint32_t value)
+{
+	/* The high half of a 32x64 Fibonacci product is well mixed; return it as
+	 * the low bits so power-of-two masking sees it. */
+	return ((uint64_t)value * UINT64_C(0x9E3779B97F4A7C15)) >> 32;
+}
+
+/* Full 128-bit product of two 64-bit values; returns the high half. */
+RGINLINE uint64_t rg_hash_mul_u64_wide(uint64_t a, uint64_t b, uint64_t* low)
+{
+#if defined(RG_HASH_USE_UMUL128)
+	uint64_t high;
+	*low = _umul128(a, b, &high);
+	return high;
+#elif defined(RG_HASH_USE_INT128)
+	unsigned __int128 product = (unsigned __int128)a * (unsigned __int128)b;
+	*low = (uint64_t)product;
+	return (uint64_t)(product >> 64);
+#else
+	uint64_t a0 = (uint32_t)a;
+	uint64_t a1 = a >> 32;
+	uint64_t b0 = (uint32_t)b;
+	uint64_t b1 = b >> 32;
+
+	uint64_t product = a0 * b0;
+	uint64_t word0 = (uint32_t)product;
+	uint64_t carry = product >> 32;
+
+	product = a1 * b0 + carry;
+	uint64_t word1 = (uint32_t)product;
+	uint64_t word2 = product >> 32;
+
+	product = a0 * b1 + word1;
+	*low = (product << 32) + word0;
+	return a1 * b1 + word2 + (product >> 32);
+#endif
+}
+
+RGINLINE uint64_t rg_hash_u64_fast(uint64_t value)
+{
+	/* A 64-bit multiply alone carries information upward only, so any single
+	 * 64-bit product leaves keys that differ in their upper bits sharing low
+	 * bits. The 128-bit product's high half depends on every input bit; XOR
+	 * with the low half keeps small sequential keys well spread too. */
+	uint64_t low;
+	uint64_t high = rg_hash_mul_u64_wide(value, UINT64_C(0x9E3779B97F4A7C15), &low);
+	return high ^ low;
+}
+
+RGINLINE uint64_t rg_hash_ptr_fast(const void* ptr)
+{
+	return rg_hash_u64_fast((uint64_t)(uintptr_t)ptr);
 }
 
 RGINLINE int rg_hash_eq_u32(uint32_t a, uint32_t b)
