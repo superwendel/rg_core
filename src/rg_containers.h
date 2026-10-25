@@ -76,6 +76,10 @@
 typedef RG_SPARSE_INDEX_TYPE RgSparseIndex;
 
 #define RG_SPARSE_INDEX_MAX ((size_t)(RgSparseIndex)-1)
+// RG_SPARSE_INVALID as stored in the sparse array. Masking before the cast
+// keeps the constant in range for narrow index types, so compilers do not
+// report a truncating constant conversion.
+#define RG_SPARSE_INDEX_INVALID ((RgSparseIndex)((size_t)RG_SPARSE_INVALID & RG_SPARSE_INDEX_MAX))
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -896,7 +900,7 @@ typedef RG_SPARSE_INDEX_TYPE RgSparseIndex;
 					    (RgSparseIndex)_rg_index;                               \
 				}                                                               \
 				(set)->dense_count = _rg_last;                                  \
-				(set)->sparse[_rg_id] = (RgSparseIndex)RG_SPARSE_INVALID;       \
+				(set)->sparse[_rg_id] = RG_SPARSE_INDEX_INVALID;       \
 			}                                                                   \
 		}                                                                       \
 	} while (0)
@@ -1011,7 +1015,7 @@ RG_CONTAINERS_COLD RgSparseIndex* rg_container_grow_sparse(const RgSparseIndex* 
 		memcpy(new_sparse, sparse, old_cap * sizeof(RgSparseIndex));
 
 	for (size_t i = old_cap; i < new_cap; i++)
-		new_sparse[i] = (RgSparseIndex)RG_SPARSE_INVALID;
+		new_sparse[i] = RG_SPARSE_INDEX_INVALID;
 
 	return new_sparse;
 }
