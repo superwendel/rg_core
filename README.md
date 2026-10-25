@@ -1,5 +1,7 @@
 # rg_core by Reverse Gravity
 
+[![CI](https://github.com/superwendel/rg_core/actions/workflows/ci.yml/badge.svg)](https://github.com/superwendel/rg_core/actions/workflows/ci.yml)
+
 `rg_core` is a set of header-only C modules designed for unity builds. It
 provides memory arenas, containers, hashing, sorting, binary I/O, strings,
 math, timing, logging, assertions, formatting, and a small SDL3 foundation.
@@ -225,9 +227,14 @@ On Linux x86-64, with GCC C/C++ compilers and Bash available:
 ```sh
 ./build.sh test
 ./build.sh test_ubsan
+./build.sh test_asan
 ./build.sh bench
 ./build.sh bench_regression
 ```
+
+Every push and pull request runs these on GitHub Actions for Linux (GCC and
+Clang, including both sanitizer passes), macOS arm64 (Clang), and Windows x64
+(MSVC via `build.bat test`), and builds every benchmark on each platform.
 
 `test` is the default target. Individual modules and benchmark suites can be
 selected with targets such as `test_mem`, `test_sprintf`, `bench_math`, and

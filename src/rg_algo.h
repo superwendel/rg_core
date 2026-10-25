@@ -341,7 +341,9 @@
 			type* r = right_base - offsets_r[0]; \
 			type tmp = *l; \
 			*l = *r; \
-			for (size_t i = 1; i < num; i++) \
+			/* num <= RG_ALGO_BLOCK always holds; the explicit bound lets the \
+			   compiler see the offsets arrays are never over-read. */ \
+			for (size_t i = 1; i < num && i < (size_t)RG_ALGO_BLOCK; i++) \
 			{ \
 				l = left_base + offsets_l[i]; \
 				*r = *l; \

@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.compiler }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { compiler: gcc, cc: gcc, cxx: g++ }
+          - { compiler: clang, cc: clang, cxx: clang++ }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compiler versions
+        run: |
+          $CC --version | head -1
+          $CXX --version | head -1
+      - name: Tests
+        run: ./build.sh test
+      - name: UndefinedBehaviorSanitizer
+        run: ./build.sh test_ubsan
+      - name: AddressSanitizer
+        run: ./build.sh test_asan
+      - name: Build benchmarks
+        run: |
+          RG_BENCH_BUILD_ONLY=1 ./build.sh bench
+          RG_BENCH_BUILD_ONLY=1 ./build.sh bench_regression
+      - name: Validate formatter output
+        run: .bench-build/linux/current/bench_sprintf --validate
+
+  macos:
+    name: macOS arm64 clang
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL3
+        run: brew install sdl3 pkg-config || true
+      - name: Compiler version
+        run: cc --version | head -1
+      - name: Tests
+        run: ./build.sh test
+      - name: UndefinedBehaviorSanitizer
+        run: ./build.sh test_ubsan
+      - name: AddressSanitizer
+        run: ./build.sh test_asan
+      - name: Build benchmarks
+        run: |
+          RG_BENCH_BUILD_ONLY=1 ./build.sh bench
+          RG_BENCH_BUILD_ONLY=1 ./build.sh bench_regression
+      - name: Validate formatter output
+        run: .bench-build/linux/current/bench_sprintf --validate
+
+  windows:
+    name: Windows x64 MSVC
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Tests
+        shell: cmd
+        run: build.bat test
+      - name: Build core benchmarks
+        shell: cmd
+        env:
+          RG_BENCH_BUILD_ONLY: 1
+        run: build.bat bench
+      - name: Regression benchmarks
+        shell: cmd
+        run: build.bat bench_regression

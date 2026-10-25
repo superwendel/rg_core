@@ -28,7 +28,7 @@ sdl_libs=()
 usage() {
     cat <<'EOF'
 Usage: ./build.sh [target] [benchmark arguments...]
-  test (default), test_<module>, test_ubsan
+  test (default), test_<module>, test_ubsan, test_asan
   bench                 algo, hash, and containers
   bench_<suite>         algo, hash, containers, math, sprintf, storage, input, prof
                         (math also builds and runs bench_math_avx2 on AVX2 hosts)
@@ -255,10 +255,13 @@ test_all() {
     echo 'All Linux tests passed.'
 }
 
-test_ubsan() {
-    local source name
-    test_output="$test_output/ubsan"
-    test_flags+=(-g -fsanitize=undefined -fno-sanitize-recover=undefined)
+# Build every portable test with a sanitizer. $1 names the pass (ubsan or
+# asan); the remaining arguments are the sanitizer flags.
+test_sanitized() {
+    local pass=$1 source name
+    shift
+    test_output="$test_output/$pass"
+    test_flags+=(-g "$@")
     for source in "$repo"/tests/test_*.c; do
         name=${source##*/}
         case $name in test_sdl.c|test_input.c|test_input_frame.c|test_sprintf_abi.c) continue ;; esac
@@ -273,8 +276,14 @@ test_ubsan() {
     test_case test_time_os_clock test_time.c -DRG_TIME_USE_TSC=0
     test_case test_mem_prefault test_mem.c -DRG_MALLOC_PREFAULT=1
     test_case test_containers_u32_index test_containers.c -DRG_SPARSE_INDEX_TYPE=uint32_t
-    echo 'All Linux UBSan tests passed.'
+    # Extreme but supported sort configuration: single-element blocks, the
+    # smallest insertion cutoff, and a one-entry range stack.
+    test_case test_algo_extreme test_algo.c -DRG_ALGO_BLOCK=1 -DRG_ALGO_INSERTION_CUTOFF=2 -DRG_ALGO_NINTHER_CUTOFF=8 -DRG_ALGO_STACK_CAP=1
+    echo "All Linux $pass tests passed."
 }
+
+test_ubsan() { test_sanitized ubsan -fsanitize=undefined -fno-sanitize-recover=undefined; }
+test_asan() { test_sanitized asan -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer; }
 
 bench_suite() {
     local suite=$1 aggregate=${2:-0}
@@ -365,6 +374,7 @@ case $target in
     help|-h|--help) usage ;;
     clean) rm -rf -- "$test_output" "$repo/.bench-build/linux" ;;
     test_ubsan) test_ubsan ;;
+    test_asan) test_asan ;;
     test) probe_cpu; test_all ;;
     test_*) probe_cpu; test_module "${target#test_}" ;;
     bench) probe_cpu; for suite in algo hash containers; do bench_suite "$suite" 1; done ;;

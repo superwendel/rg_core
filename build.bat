@@ -146,6 +146,10 @@ cl %COMMON_FLAGS% /I "%SDL3_DIR%\include" tests\test_input_frame.c /Fe:test_inpu
 if errorlevel 1 exit /b 1
 test_input_frame.exe
 if errorlevel 1 exit /b 1
+cl %COMMON_FLAGS% /DRG_INPUT_NO_SIMD /I "%SDL3_DIR%\include" tests\test_input_frame.c /Fe:test_input_frame_scalar.exe /link /LIBPATH:"%SDL3_DIR%\lib\x64" SDL3.lib
+if errorlevel 1 exit /b 1
+test_input_frame_scalar.exe
+if errorlevel 1 exit /b 1
 echo All rg_input tests passed.
 exit /b 0
 
@@ -276,6 +280,24 @@ if errorlevel 1 exit /b 1
 test_mem_secure.exe
 if errorlevel 1 exit /b 1
 
+echo Building prefaulting rg_mem tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_MALLOC_PREFAULT=1 tests\test_mem.c /Fe:test_mem_prefault.exe
+if errorlevel 1 exit /b 1
+test_mem_prefault.exe
+if errorlevel 1 exit /b 1
+
+echo Building huge-page rg_mem tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_MALLOC_HUGE_PAGES=1 tests\test_mem.c /Fe:test_mem_huge_pages.exe
+if errorlevel 1 exit /b 1
+test_mem_huge_pages.exe
+if errorlevel 1 exit /b 1
+
+echo Building prefaulting huge-page rg_mem tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_MALLOC_PREFAULT=1 /DRG_MALLOC_HUGE_PAGES=1 tests\test_mem.c /Fe:test_mem_prefault_huge_pages.exe
+if errorlevel 1 exit /b 1
+test_mem_prefault_huge_pages.exe
+if errorlevel 1 exit /b 1
+
 echo All rg_mem tests passed.
 exit /b 0
 
@@ -295,6 +317,18 @@ echo Building configured rg_containers tests...
 cl %COMMON_FLAGS% /std:c11 /DRG_CONTAINERS_MIN_CAP=3 /DRG_SPARSE_INVALID=17 /Fo:test_containers_config.obj tests\test_containers.c /Fe:test_containers_config.exe
 if errorlevel 1 exit /b 1
 test_containers_config.exe
+if errorlevel 1 exit /b 1
+
+echo Building 32-bit-index rg_containers tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_SPARSE_INDEX_TYPE=uint32_t /Fo:test_containers_u32_index.obj tests\test_containers.c /Fe:test_containers_u32_index.exe
+if errorlevel 1 exit /b 1
+test_containers_u32_index.exe
+if errorlevel 1 exit /b 1
+
+echo Building configured 32-bit-index rg_containers tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_SPARSE_INDEX_TYPE=uint32_t /DRG_CONTAINERS_MIN_CAP=3 /DRG_SPARSE_INVALID=17 /Fo:test_containers_u32_index_config.obj tests\test_containers.c /Fe:test_containers_u32_index_config.exe
+if errorlevel 1 exit /b 1
+test_containers_u32_index_config.exe
 if errorlevel 1 exit /b 1
 
 echo All rg_containers tests passed.
@@ -318,6 +352,18 @@ if errorlevel 1 exit /b 1
 test_time_custom.exe
 if errorlevel 1 exit /b 1
 
+echo Building OS-clock rg_time tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_TIME_USE_TSC=0 /Fo:test_time_os_clock.obj tests\test_time.c /Fe:test_time_os_clock.exe
+if errorlevel 1 exit /b 1
+test_time_os_clock.exe
+if errorlevel 1 exit /b 1
+
+echo Building calibrated-TSC rg_time tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_TIME_TSC_FORCE_CALIBRATION /Fo:test_time_tsc_calibrated.obj tests\test_time.c /Fe:test_time_tsc_calibrated.exe
+if errorlevel 1 exit /b 1
+test_time_tsc_calibrated.exe
+if errorlevel 1 exit /b 1
+
 echo All rg_time tests passed.
 exit /b 0
 
@@ -337,6 +383,18 @@ echo Building disabled rg_prof tests...
 cl %COMMON_FLAGS% /std:c11 /Fo:test_prof_disabled.obj tests\test_prof_disabled.c /Fe:test_prof_disabled.exe
 if errorlevel 1 exit /b 1
 test_prof_disabled.exe
+if errorlevel 1 exit /b 1
+
+echo Building OS-clock rg_prof tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_TIME_USE_TSC=0 /Fo:test_prof_os_clock.obj tests\test_prof.c /Fe:test_prof_os_clock.exe
+if errorlevel 1 exit /b 1
+test_prof_os_clock.exe
+if errorlevel 1 exit /b 1
+
+echo Building plain-count rg_prof tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_PROF_ATOMICS=0 /Fo:test_prof_plain_count.obj tests\test_prof.c /Fe:test_prof_plain_count.exe
+if errorlevel 1 exit /b 1
+test_prof_plain_count.exe
 if errorlevel 1 exit /b 1
 
 echo All rg_prof tests passed.
@@ -629,9 +687,9 @@ del /q test_string.exe test_string_avx2.exe test_string_scalar.exe test_string_s
 del /q test_math.exe test_math_avx2.exe test_math_scalar.exe test_math_checked.exe test_math_plain.exe test_math_lean.exe test_math_cpp.exe 2>nul
 del /q test_sdl.exe test_input.exe 2>nul
 del /q test_sprintf.obj test_log.obj test_assert.obj test_assert_disabled.obj test_mem.obj test_hash.obj test_random.obj 2>nul
-del /q test_containers.obj test_containers_config.obj test_containers_cpp.obj 2>nul
-del /q test_time.obj test_time_custom.obj test_time_cpp.obj 2>nul
-del /q test_prof.obj test_prof_disabled.obj test_prof_cpp.obj 2>nul
+del /q test_containers.obj test_containers_config.obj test_containers_cpp.obj test_containers_u32_index.obj test_containers_u32_index_config.obj 2>nul
+del /q test_time.obj test_time_custom.obj test_time_cpp.obj test_time_os_clock.obj test_time_tsc_calibrated.obj 2>nul
+del /q test_prof.obj test_prof_disabled.obj test_prof_cpp.obj test_prof_os_clock.obj test_prof_plain_count.obj 2>nul
 del /q test_bin.obj test_bin_unaligned.obj test_bin_bytewise.obj test_bin_cpp.obj 2>nul
 del /q test_algo.obj test_algo_config.obj test_algo_cpp.obj 2>nul
 del /q test_string.obj test_string_avx2.obj test_string_scalar.obj test_string_secure.obj test_string_cpp.obj 2>nul
