@@ -232,9 +232,10 @@ On Linux x86-64, with GCC C/C++ compilers and Bash available:
 ./build.sh bench_regression
 ```
 
-Every push and pull request runs these on GitHub Actions for Linux (GCC and
-Clang, including both sanitizer passes), macOS arm64 (Clang), and Windows x64
-(MSVC via `build.bat test`), and builds every benchmark on each platform.
+Pushes to `main` and every pull request run these on GitHub Actions for Linux
+(GCC and Clang, including both sanitizer passes), macOS arm64 (Clang, with the
+SDL-dependent tests when Homebrew provides SDL3), and Windows x64 (MSVC via
+`build.bat test`), and build every benchmark on each platform.
 
 `test` is the default target. Individual modules and benchmark suites can be
 selected with targets such as `test_mem`, `test_sprintf`, `bench_math`, and

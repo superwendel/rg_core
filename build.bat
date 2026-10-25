@@ -669,16 +669,17 @@ exit /b %errorlevel%
 
 :clean
 del /q test_math_clip.exe test_math_clip.obj 2>nul
-del /q test_input_frame.exe test_input_frame.obj test_input_frame_cpp.exe test_input_frame_cpp.obj 2>nul
+del /q test_input_frame.exe test_input_frame.obj test_input_frame_cpp.exe test_input_frame_cpp.obj test_input_frame_scalar.exe test_input_frame_scalar.obj 2>nul
 del /q bench_algo.exe bench_hash.exe bench_containers.exe bench_algo_refs.obj 2>nul
 del /q test_sprintf.exe test_sprintf_scalar.exe test_sprintf_asm.exe 2>nul
 del /q test_sprintf_fallback.exe test_sprintf_asm_fallback.exe 2>nul
 del /q test_sprintf_secure.exe test_sprintf_asm_secure.exe 2>nul
 del /q test_log.exe test_log_fallback.exe test_assert.exe test_assert_disabled.exe 2>nul
 del /q test_mem.exe test_mem_eager.exe test_mem_secure.exe test_mem_cpp.exe 2>nul
-del /q test_containers.exe test_containers_config.exe test_containers_cpp.exe 2>nul
-del /q test_time.exe test_time_custom.exe test_time_cpp.exe 2>nul
-del /q test_prof.exe test_prof_disabled.exe test_prof_cpp.exe 2>nul
+del /q test_mem_prefault.exe test_mem_huge_pages.exe test_mem_prefault_huge_pages.exe 2>nul
+del /q test_containers.exe test_containers_config.exe test_containers_cpp.exe test_containers_u32_index.exe test_containers_u32_index_config.exe 2>nul
+del /q test_time.exe test_time_custom.exe test_time_cpp.exe test_time_os_clock.exe test_time_tsc_calibrated.exe 2>nul
+del /q test_prof.exe test_prof_disabled.exe test_prof_cpp.exe test_prof_os_clock.exe test_prof_plain_count.exe 2>nul
 del /q test_bin.exe test_bin_unaligned.exe test_bin_bytewise.exe test_bin_cpp.exe 2>nul
 del /q test_hash.exe test_hash_eager.exe test_hash_cpp.exe 2>nul
 del /q test_random.exe test_random_portable.exe test_random_cpp.exe 2>nul
