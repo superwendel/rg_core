@@ -278,7 +278,8 @@ RGINLINE void rg_builder_reset(RgBuilder* b);
 #include <immintrin.h>
 #define RG_HAS_AVX2 1
 #endif
-#if defined(__ARM_NEON)
+// vqtbl1q_u8 is AArch64-only; 32-bit ARM uses the scalar encoder.
+#if defined(__ARM_NEON) && defined(__aarch64__)
 #include <arm_neon.h>
 #define RG_HAS_NEON 1
 #endif

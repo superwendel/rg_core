@@ -17,7 +17,9 @@
 //     one Newton-Raphson step so they are at least as accurate as the SSE
 //     estimates they replace (about 16 bits instead of 12).
 //   - The *_ss operations compute lane 0 and copy lanes 1-3 from the first
-//     operand, exactly as SSE does.
+//     operand, exactly as SSE does. They evaluate only lane 0, so unrelated
+//     lanes (such as a negative value next to a square root) raise no
+//     floating-point exceptions.
 // Requires GCC 12+ or Clang (__builtin_shufflevector); MSVC ARM64 builds use
 // the scalar implementation.
 //
@@ -152,13 +154,20 @@ RGINLINE __m128 rg__neon_insert0(__m128 a, float32x2_t lo)
 	return vsetq_lane_f32(vget_lane_f32(lo, 0), a, 0);
 }
 
+// Lane 0 of a broadcast to both halves of a d register, so two-lane
+// instructions never operate on an unrelated value.
+RGINLINE float32x2_t rg__neon_lane0(__m128 a)
+{
+	return vdup_n_f32(vgetq_lane_f32(a, 0));
+}
+
 RGINLINE __m128 _mm_add_ss(__m128 a, __m128 b) { return vsetq_lane_f32(vgetq_lane_f32(a, 0) + vgetq_lane_f32(b, 0), a, 0); }
 RGINLINE __m128 _mm_sub_ss(__m128 a, __m128 b) { return vsetq_lane_f32(vgetq_lane_f32(a, 0) - vgetq_lane_f32(b, 0), a, 0); }
 RGINLINE __m128 _mm_mul_ss(__m128 a, __m128 b) { return vsetq_lane_f32(vgetq_lane_f32(a, 0) * vgetq_lane_f32(b, 0), a, 0); }
 RGINLINE __m128 _mm_div_ss(__m128 a, __m128 b) { return vsetq_lane_f32(vgetq_lane_f32(a, 0) / vgetq_lane_f32(b, 0), a, 0); }
-RGINLINE __m128 _mm_min_ss(__m128 a, __m128 b) { return rg__neon_insert0(a, vmin_f32(vget_low_f32(a), vget_low_f32(b))); }
-RGINLINE __m128 _mm_max_ss(__m128 a, __m128 b) { return rg__neon_insert0(a, vmax_f32(vget_low_f32(a), vget_low_f32(b))); }
-RGINLINE __m128 _mm_sqrt_ss(__m128 a) { return rg__neon_insert0(a, vsqrt_f32(vget_low_f32(a))); }
+RGINLINE __m128 _mm_min_ss(__m128 a, __m128 b) { return rg__neon_insert0(a, vmin_f32(rg__neon_lane0(a), rg__neon_lane0(b))); }
+RGINLINE __m128 _mm_max_ss(__m128 a, __m128 b) { return rg__neon_insert0(a, vmax_f32(rg__neon_lane0(a), rg__neon_lane0(b))); }
+RGINLINE __m128 _mm_sqrt_ss(__m128 a) { return rg__neon_insert0(a, vsqrt_f32(rg__neon_lane0(a))); }
 
 // The scalar estimate forms keep lane 0 in a scalar register so a following
 // lane broadcast needs no insert.
@@ -181,12 +190,12 @@ RGINLINE __m128 _mm_rsqrt_ss(__m128 a)
 // -----------------------------------------------------------------------------
 
 RGINLINE __m128 _mm_floor_ps(__m128 a) { return vrndmq_f32(a); }
-RGINLINE __m128 _mm_floor_ss(__m128 a, __m128 b) { return rg__neon_insert0(a, vrndm_f32(vget_low_f32(b))); }
-RGINLINE __m128 _mm_ceil_ss(__m128 a, __m128 b) { return rg__neon_insert0(a, vrndp_f32(vget_low_f32(b))); }
+RGINLINE __m128 _mm_floor_ss(__m128 a, __m128 b) { return rg__neon_insert0(a, vrndm_f32(rg__neon_lane0(b))); }
+RGINLINE __m128 _mm_ceil_ss(__m128 a, __m128 b) { return rg__neon_insert0(a, vrndp_f32(rg__neon_lane0(b))); }
 
 RGINLINE __m128 _mm_round_ss(__m128 a, __m128 b, int rounding)
 {
-	float32x2_t x = vget_low_f32(b);
+	float32x2_t x = rg__neon_lane0(b);
 	switch (rounding & 0x3)
 	{
 	case _MM_FROUND_TO_NEG_INF: return rg__neon_insert0(a, vrndm_f32(x));

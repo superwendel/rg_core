@@ -103,12 +103,23 @@ RGINLINE f32 rg_ceilf(f32 x)
 	return _mm_cvtss_f32(_mm_ceil_ss(_mm_setzero_ps(), _mm_set_ss(x)));
 }
 
+// roundf(): half away from zero, matching libc bit for bit including the sign
+// of zero, NaN and infinities.
 RGINLINE f32 rg_roundf(f32 x)
 {
+#if defined(RG_MATH_NEON)
+	return vget_lane_f32(vrnda_f32(vdup_n_f32(x)), 0);
+#else
+	// Truncate, then add +-1 when the (exact) remainder is at least one half.
+	// Adding 0.5 before truncating would misround 0.49999997f and 2^23 + 1.
 	__m128 xv = _mm_set_ss(x);
-	__m128 sign = _mm_and_ps(xv, _mm_castsi128_ps(_mm_set1_epi32((int)0x80000000u)));
-	__m128 half = _mm_or_ps(_mm_set_ss(0.5f), sign);
-	return _mm_cvtss_f32(_mm_round_ss(_mm_setzero_ps(), _mm_add_ss(xv, half), _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+	__m128 sign_mask = _mm_castsi128_ps(_mm_set1_epi32((int)0x80000000u));
+	__m128 sign = _mm_and_ps(xv, sign_mask);
+	__m128 t = _mm_round_ss(_mm_setzero_ps(), xv, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+	__m128 remainder = _mm_andnot_ps(sign_mask, _mm_sub_ss(xv, t));
+	__m128 step = _mm_and_ps(_mm_cmpge_ps(remainder, _mm_set_ss(0.5f)), _mm_set_ss(1.0f));
+	return _mm_cvtss_f32(_mm_add_ss(t, _mm_or_ps(step, sign)));
+#endif
 }
 #else
 #define rg_floorf(x) floorf((x))
@@ -755,18 +766,37 @@ RGINLINE f32 rg_absf(f32 x)
 
 #define RG_FLOAT_NO_FRACTION 8388608.0f // 2^23
 
+#if !RG_MATH_USE_LIBC
+// Zero with the sign of x: floorf, ceilf and roundf return -0.0f for inputs
+// that round to zero from below, and the sign of a zero input is preserved.
+RGINLINE f32 rg_math_signed_zero(f32 x)
+{
+	union
+	{
+		f32 f;
+		u32 u;
+	} bits;
+	bits.f = x;
+	bits.u &= 0x80000000u;
+	return bits.f;
+}
+
+// True when x has no fractional part to remove: |x| >= 2^23, infinite or NaN.
+RGINLINE int rg_math_is_integral_or_special(f32 x)
+{
+	return !(x < RG_FLOAT_NO_FRACTION && x > -RG_FLOAT_NO_FRACTION);
+}
+#endif
+
 RGINLINE f32 rg_floorf(f32 x)
 {
 #if RG_MATH_USE_LIBC
 	return floorf(x);
 #else
-	// Large values are already integers (f32 can't represent fractions)
-	if (x >= RG_FLOAT_NO_FRACTION || x <= -RG_FLOAT_NO_FRACTION)
-	{
-		return x;
-	}
-	i32 i = (i32)x;
-	return (f32)(i - (x < (f32)i));
+	if (rg_math_is_integral_or_special(x)) return x;
+	f32 t = (f32)(i32)x; // truncation toward zero, exact
+	if (t > x) t -= 1.0f;
+	return t == 0.0f ? rg_math_signed_zero(x) : t;
 #endif
 }
 
@@ -775,13 +805,10 @@ RGINLINE f32 rg_ceilf(f32 x)
 #if RG_MATH_USE_LIBC
 	return ceilf(x);
 #else
-	// Large values are already integers (f32 can't represent fractions)
-	if (x >= RG_FLOAT_NO_FRACTION || x <= -RG_FLOAT_NO_FRACTION)
-	{
-		return x;
-	}
-	i32 i = (i32)x;
-	return (f32)(i + (x > (f32)i));
+	if (rg_math_is_integral_or_special(x)) return x;
+	f32 t = (f32)(i32)x;
+	if (t < x) t += 1.0f;
+	return t == 0.0f ? rg_math_signed_zero(x) : t;
 #endif
 }
 
@@ -790,8 +817,15 @@ RGINLINE f32 rg_roundf(f32 x)
 #if RG_MATH_USE_LIBC
 	return roundf(x);
 #else
-	// Round half away from zero (C99 behavior)
-	return x >= 0.0f ? rg_floorf(x + 0.5f) : rg_ceilf(x - 0.5f);
+	// Round half away from zero (C99 behavior). The remainder x - trunc(x) is
+	// exact, so comparing it with one half cannot misround 0.49999997f the way
+	// adding 0.5f before truncating does.
+	if (rg_math_is_integral_or_special(x)) return x;
+	f32 t = (f32)(i32)x;
+	f32 remainder = x - t;
+	if (remainder >= 0.5f) t += 1.0f;
+	else if (remainder <= -0.5f) t -= 1.0f;
+	return t == 0.0f ? rg_math_signed_zero(x) : t;
 #endif
 }
 #endif

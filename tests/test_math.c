@@ -7,6 +7,7 @@ static void math_assert_failed(const char* expression);
 #include "../src/rg_math.h"
 #include "../src/rg_math.h"
 
+#include <fenv.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -80,6 +81,38 @@ static void test_scalar(void)
 	}
 	CHECK(rg_imin(-4, 3) == -4);
 	CHECK(rg_imax(-4, 3) == 3);
+
+	// Rounding helpers must match libc bit for bit, including the sign of zero,
+	// values just below one half, and integers beyond 2^23 where adding 0.5
+	// before truncating misrounds.
+	{
+		static const f32 inputs[] = {0.0f, -0.0f, 0.49999997f, -0.49999997f, 0.5f, -0.5f, 1.5f, -1.5f, 2.5f, -2.5f,
+		                             -0.3f, 0.3f, 8388609.0f, -8388609.0f, 16777217.0f, 1e30f, -1e30f, 3.0f, -7.0f};
+		for (size_t i = 0; i < RG_ARRAY_COUNT(inputs); ++i)
+		{
+			rg_float_bits got, want;
+			got.f = rg_roundf(inputs[i]);
+			want.f = roundf(inputs[i]);
+			CHECK(got.u == want.u);
+			got.f = rg_floorf(inputs[i]);
+			want.f = floorf(inputs[i]);
+			CHECK(got.u == want.u);
+			got.f = rg_ceilf(inputs[i]);
+			want.f = ceilf(inputs[i]);
+			CHECK(got.u == want.u);
+		}
+	}
+
+	// Lane-0 operations must not evaluate unrelated lanes: the length of
+	// (1, -1, 0) leaves -1 next to the squared length, and a square root of it
+	// would raise the invalid-operation flag.
+	{
+		rg_vec3 v;
+		rg_vec3_set(&v, 1.0f, -1.0f, 0.0f);
+		feclearexcept(FE_INVALID);
+		CHECK_CLOSE(rg_vec3_len(&v), 1.41421356f, 1e-6f);
+		CHECK(fetestexcept(FE_INVALID) == 0);
+	}
 }
 
 static void test_vectors(void)
