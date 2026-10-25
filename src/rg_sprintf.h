@@ -1301,7 +1301,7 @@ RG_SPRINTF_COLD char* rg_dtoa_fixed_general(uint64_t m, int e2, char* p, int pre
 	}
 	else
 	{
-		int state;
+		int state = RG_REM_ZERO;
 		if (shift < 64)
 		{
 			// The quotient is below 10^precision, so no bits above n.hi << (64 - shift) remain.
@@ -1534,8 +1534,8 @@ RG_SPRINTF_COLD char* rg_dtoa_sci_slow(uint64_t m, int e2, char* p, int precisio
 	for (int attempt = 0; attempt < 8; attempt++)
 	{
 		int s = precision - E;
-		uint64_t d;
-		int state;
+		uint64_t d = 0;
+		int state = RG_REM_ZERO;
 		int ok = digits_wanted <= 17 ? rg_sci_scaled_fast(m, e2, s, &d, &state) : 0;
 		if (ok < 0)
 		{
