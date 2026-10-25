@@ -330,56 +330,110 @@ static void test_collision_probe_and_exhausted_update(void)
 	rg_hash_set_init(ProbeSet, &set, &arena);
 	CHECK(rg_hash_map_reserve(ProbeMap, &map, 1));
 	CHECK(rg_hash_set_reserve(ProbeSet, &set, 1));
-	CHECK(map.cap == 8 && set.cap == 8);
+	CHECK(map.cap == RG_HASH_MIN_CAP && set.cap == RG_HASH_MIN_CAP);
 
-	// 22 crosses the end of the table and steals slot zero from key 7.
-	const uint32_t keys[] = {6, 14, 7, 22, 30, 38};
-	for (size_t i = 0; i < 5; ++i)
+	// Identity-hashed keys that all start in the same slot, so every one after
+	// the first probes past occupied slots; fill the table to its load limit.
+	const size_t limit = rg_hash_growth_for(map.cap);
+	uint32_t keys[64];
+	CHECK(limit < RG_ARRAY_COUNT(keys));
+	for (size_t i = 0; i <= limit; ++i) keys[i] = 6u + (uint32_t)(i * map.cap);
+	for (size_t i = 0; i < limit; ++i)
 	{
 		CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[i], keys[i] * 3) == 1);
 		CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[i]) == 1);
-		if (i == 3)
-		{
-			CHECK(map.entries[0].key == 22 && map.entries[1].key == 7);
-			CHECK(set.entries[0].key == 22 && set.entries[1].key == 7);
-		}
 	}
+	CHECK(map.cap == RG_HASH_MIN_CAP && map.count == limit && map.growth_left == 0);
+	CHECK(set.cap == RG_HASH_MIN_CAP && set.count == limit && set.growth_left == 0);
 
+	// Updating an existing key at the limit allocates nothing even when the arena
+	// is exhausted; inserting a new key fails cleanly and changes nothing.
 	size_t saved_capacity = arena.capacity;
 	size_t saved_used = arena.used;
 	arena.capacity = arena.used;
 	ProbeMap_Entry* saved_map_entries = map.entries;
 	ProbeSet_Entry* saved_set_entries = set.entries;
-	CHECK(rg_hash_map_try_put(ProbeMap, &map, 22, 999) == 0);
-	CHECK(rg_hash_set_try_insert(ProbeSet, &set, 22) == 0);
-	CHECK(arena.used == saved_used && map.cap == 8 && set.cap == 8);
+	CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[3], 999) == 0);
+	CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[3]) == 0);
+	CHECK(arena.used == saved_used && map.cap == RG_HASH_MIN_CAP && set.cap == RG_HASH_MIN_CAP);
 
-	CHECK(rg_hash_map_try_put(ProbeMap, &map, 38, 114) == -1);
-	CHECK(rg_hash_set_try_insert(ProbeSet, &set, 38) == -1);
-	CHECK(map.entries == saved_map_entries && map.count == 5 && map.cap == 8);
-	CHECK(set.entries == saved_set_entries && set.count == 5 && set.cap == 8);
+	CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[limit], 114) == -1);
+	CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[limit]) == -1);
+	CHECK(map.entries == saved_map_entries && map.count == limit && map.cap == RG_HASH_MIN_CAP);
+	CHECK(set.entries == saved_set_entries && set.count == limit && set.cap == RG_HASH_MIN_CAP);
 	CHECK(arena.used == saved_used);
-	for (size_t i = 0; i < 5; ++i)
+	for (size_t i = 0; i < limit; ++i)
 	{
 		uint32_t* value = rg_hash_map_get_ptr(ProbeMap, &map, keys[i]);
-		CHECK(value != NULL && *value == (keys[i] == 22 ? 999u : keys[i] * 3));
+		CHECK(value != NULL && *value == (i == 3 ? 999u : keys[i] * 3));
 		CHECK(rg_hash_set_contains(ProbeSet, &set, keys[i]));
 	}
-	CHECK(!rg_hash_map_contains(ProbeMap, &map, 38));
-	CHECK(!rg_hash_set_contains(ProbeSet, &set, 38));
+	CHECK(!rg_hash_map_contains(ProbeMap, &map, keys[limit]));
+	CHECK(!rg_hash_set_contains(ProbeSet, &set, keys[limit]));
 
 	// Growth must preserve every collided key and the value updated while full.
 	arena.capacity = saved_capacity;
-	CHECK(rg_hash_map_try_put(ProbeMap, &map, 38, 114) == 1);
-	CHECK(map.cap == 16 && map.count == 6);
-	CHECK(rg_hash_set_try_insert(ProbeSet, &set, 38) == 1);
-	CHECK(set.cap == 16 && set.count == 6);
-	for (size_t i = 0; i < RG_ARRAY_COUNT(keys); ++i)
+	CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[limit], 114) == 1);
+	CHECK(map.cap == 2 * RG_HASH_MIN_CAP && map.count == limit + 1);
+	CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[limit]) == 1);
+	CHECK(set.cap == 2 * RG_HASH_MIN_CAP && set.count == limit + 1);
+	for (size_t i = 0; i <= limit; ++i)
 	{
 		uint32_t* value = rg_hash_map_get_ptr(ProbeMap, &map, keys[i]);
-		CHECK(value != NULL && *value == (keys[i] == 22 ? 999u : keys[i] * 3));
+		CHECK(value != NULL && *value == (i == 3 ? 999u : (i == limit ? 114u : keys[i] * 3)));
 		CHECK(rg_hash_set_contains(ProbeSet, &set, keys[i]));
 	}
+
+	// Occupancy is visible through entries[i].hash for callers that iterate.
+	size_t live = 0;
+	for (size_t i = 0; i < map.cap; ++i) live += map.entries[i].hash != 0;
+	CHECK(live == map.count);
+}
+
+static void test_tombstone_churn(void)
+{
+	// Removing and reinserting at a fixed size must not degrade lookups or leak
+	// capacity: tombstones are reclaimed by a same-size rebuild when needed.
+	rg_arena_reset(&arena);
+	ProbeMap map;
+	rg_hash_map_init(ProbeMap, &map, &arena);
+	CHECK(rg_hash_map_reserve(ProbeMap, &map, 40));
+	const size_t cap = map.cap;
+	for (uint32_t round = 0; round < 200; ++round)
+	{
+		for (uint32_t i = 0; i < 40; ++i)
+		{
+			uint32_t key = round * 1000u + i;
+			CHECK(rg_hash_map_try_put(ProbeMap, &map, key, key + 1) == 1);
+		}
+		CHECK(map.count == 40 && map.cap == cap);
+		for (uint32_t i = 0; i < 40; ++i)
+		{
+			uint32_t key = round * 1000u + i;
+			const uint32_t* value = rg_hash_map_get_ptr(ProbeMap, &map, key);
+			CHECK(value != NULL && *value == key + 1);
+			CHECK(!rg_hash_map_contains(ProbeMap, &map, key + 500u));
+		}
+		for (uint32_t i = 0; i < 40; i += 2)
+		{
+			int removed = 0;
+			rg_hash_map_remove(ProbeMap, &map, round * 1000u + i, &removed);
+			CHECK(removed == 1);
+		}
+		CHECK(map.count == 20);
+		size_t live = 0;
+		for (size_t i = 0; i < map.cap; ++i) live += map.entries[i].hash != 0;
+		CHECK(live == 20);
+		for (uint32_t i = 1; i < 40; i += 2)
+		{
+			int removed = 0;
+			rg_hash_map_remove(ProbeMap, &map, round * 1000u + i, &removed);
+			CHECK(removed == 1);
+			CHECK(!rg_hash_map_contains(ProbeMap, &map, round * 1000u + i));
+		}
+		CHECK(map.count == 0);
+	}
+	CHECK(map.cap == cap);
 }
 
 /* Count the slots a key pattern occupies under an 8,192-slot mask. Random keys
@@ -667,6 +721,7 @@ int main(void)
 	test_set_random();
 	test_set_collisions();
 	test_collision_probe_and_exhausted_update();
+	test_tombstone_churn();
 	test_fast_hash_distribution();
 	test_fast_hash_tables();
 	test_single_hash_per_operation();

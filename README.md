@@ -176,7 +176,7 @@ intentional.
 - [`rg_containers.h`](docs/rg_containers.md) — typed dynamic arrays, inline
   small vectors, power-of-two ring buffers, and sparse sets.
 - [`rg_hash.h`](docs/rg_hash.md) — deterministic 64-bit hashing and typed
-  robin-hood hash maps and sets.
+  SIMD-probed open-addressing hash maps and sets.
 - [`rg_algo.h`](docs/rg_algo.md) — typed sorting, selection, searching, min/max,
   and stable 32/64-bit radix sorting.
 - [`rg_random.h`](docs/rg_random.md) — deterministic xoshiro256** generation,

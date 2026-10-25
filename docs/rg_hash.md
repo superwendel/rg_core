@@ -1,7 +1,7 @@
 # rg_hash
 
 `rg_hash.h` provides deterministic 64-bit hashing and arena-backed, typed
-robin-hood hash maps and sets. It is a single-header C library built on
+open-addressing hash maps and sets. It is a single-header C library built on
 [`rg_mem.h`](rg_mem.md).
 
 ## Setup
@@ -155,11 +155,42 @@ and `rg_hash_set_find_index_hashed_<name>(set, key, hash)` functions expose the
 same lookup for callers that already hold the prepared hash; the hash must be
 the table's hash function output passed through `rg_hash_prepare`.
 
+## Table layout and probing
+
+Each table keeps two arrays: the entries (`hash`, `key`, and for maps `value`)
+and one control byte per slot. A control byte is either empty, deleted, or the
+key's seven-bit tag taken from hash bits 25 to 31. Lookups compare a whole group
+of control bytes against the tag with one SSE2 or NEON instruction (16 or 8
+slots at a time; 8 with 64-bit arithmetic when `RG_HASH_NO_SIMD` is defined or
+no SIMD is available), and read an entry only when its tag matches. A group
+that contains an empty byte ends an unsuccessful lookup, so a miss usually
+costs one control-group read and no entry reads. The key's home entry is
+prefetched alongside its control group, so a key stored in its home slot costs
+one memory access on a hit.
+
+Removing a key marks its slot empty when no lookup can have probed past it,
+and otherwise leaves a deleted marker (a tombstone) so later lookups keep
+probing. Inserting into a table whose free slots are exhausted by tombstones
+rebuilds it at the same size; inserting into one that is genuinely full doubles
+it. Both allocate replacement arrays from the arena.
+
+Iterate a table through its entries: `map.entries[i].hash` is nonzero exactly
+for the occupied slots in `[0, map.cap)`, and that holds across removals. The
+`ctrl` and `growth_left` fields are internal.
+
+The recommended `rg_hash_*_fast` functions spread bits 25 to 31 well. A custom
+hash whose bits in that range are constant (an identity hash of small integers,
+for example) still works, but every slot in a probe group then matches the tag
+and the table falls back to comparing stored hashes, which costs an entry read
+per candidate.
+
 ## Arena ownership and pointer lifetime
 
-Growing a table allocates a replacement array from its arena. The old array is
-not reclaimed until the arena is reset or released. Reserving the expected
-entry count up front avoids those abandoned growth allocations.
+Growing a table, or rebuilding it to drop tombstones, allocates replacement
+arrays from its arena. The old arrays are not reclaimed until the arena is
+reset or released. Reserving the expected entry count up front avoids growth
+allocations; tables with heavy remove-and-reinsert churn at a fixed size still
+rebuild occasionally.
 
 `rg_hash_map_clear` and `rg_hash_set_clear` retain the current allocation for
 reuse. The `free` operations only detach the table from its arena; they do not
@@ -176,11 +207,12 @@ Define options before including the header:
 
 ```c
 #define RG_HASH_ASSERT(condition)  // Custom assertion macro
-#define RG_HASH_MIN_CAP            // Minimum capacity; default: 8
+#define RG_HASH_MIN_CAP            // Minimum capacity, a power of two of at least 16; default: 16
 #define RG_HASH_MAX_LOAD_NUM       // Load numerator; default: 7
 #define RG_HASH_MAX_LOAD_DEN       // Load denominator; default: 10
 #define RG_HASH_SEED               // Default string/integer seed; default: 0
 #define RG_HASH_INVALID            // Invalid index sentinel; default: SIZE_MAX
+#define RG_HASH_NO_SIMD            // Probe with 64-bit arithmetic instead of SSE2/NEON
 ```
 
 The load numerator and denominator must describe a value strictly between zero
@@ -200,21 +232,32 @@ the implementation order rotates between samples.
 
 | Entries | Operation | rg (`rg_hash_u32_fast`) | rg (`rg_hash_u32`) | `std::unordered_map` |
 | ---: | --- | ---: | ---: | ---: |
-| 4,096 | insert | 4.6 | 5.7 | 26.3 |
-| 4,096 | find, insertion order | 2.3 | 3.6 | 4.0 |
-| 4,096 | find, shuffled order | 2.3 | 3.6 | 4.1 |
-| 4,096 | find, missing keys | 1.5 | 5.6 | 4.2 |
-| 4,096 | remove | 4.0 | 6.1 | 21.3 |
-| 65,536 | insert | 5.9 | 13.8 | 23.8 |
-| 65,536 | find, insertion order | 3.9 | 11.1 | 4.5 |
-| 65,536 | find, shuffled order | 4.0 | 11.3 | 7.2 |
-| 65,536 | find, missing keys | 10.9 | 16.7 | 11.9 |
-| 65,536 | remove | 8.0 | 15.3 | 33.0 |
-| 500,000 | insert | 25.8 | 29.7 | 49.1 |
-| 500,000 | find, insertion order | 17.9 | 22.6 | 12.4 |
-| 500,000 | find, shuffled order | 17.6 | 22.5 | 31.8 |
-| 500,000 | find, missing keys | 13.3 | 25.8 | 24.2 |
-| 500,000 | remove | 26.5 | 31.7 | 144.1 |
+| 4,096 | insert | 5.8 | 7.8 | 27.2 |
+| 4,096 | find, insertion order | 3.0 | 4.0 | 4.2 |
+| 4,096 | find, shuffled order | 2.9 | 4.0 | 4.4 |
+| 4,096 | find, missing keys | 2.4 | 4.0 | 4.4 |
+| 4,096 | remove | 6.4 | 7.8 | 22.7 |
+| 65,536 | insert | 7.5 | 9.3 | 26.7 |
+| 65,536 | find, insertion order | 5.3 | 9.4 | 5.0 |
+| 65,536 | find, shuffled order | 5.1 | 8.8 | 8.5 |
+| 65,536 | find, missing keys | 2.8 | 5.0 | 12.7 |
+| 65,536 | remove | 10.0 | 13.6 | 41.9 |
+| 500,000 | insert | 22.5 | 16.1 | 55.9 |
+| 500,000 | find, insertion order | 20.3 | 20.1 | 14.3 |
+| 500,000 | find, shuffled order | 19.7 | 20.0 | 34.6 |
+| 500,000 | find, missing keys | 8.2 | 7.8 | 26.0 |
+| 500,000 | remove | 29.2 | 31.1 | 160.2 |
+
+These are medians of five alternating process runs of the group-probed table
+and, for `std::unordered_map`, of the same runs. Against the previous Robin
+Hood layout measured the same way, misses are 4 to 6 times faster at 65,536
+entries and nearly twice as fast at 500,000, large-table inserts are 18
+percent faster, and the avalanche-hash column improves on every operation at
+65,536 entries and above (its misses fall from 18.1 to 5.0 ns). The cost is
+on in-cache hits with the fast hash: a lookup reads a control group before the
+entry, which adds about 0.6 ns at 4,096 entries and 1.1 ns at 65,536; at
+500,000 entries the two reads overlap and hits are unchanged. Removal pays for
+the empty-or-tombstone decision, about 2 ns at 4,096 entries.
 
 String keys (`rg_hash_str`, 32-byte keys, `bench_storage`): 23.0 ns per
 reserved insert and 23.0 ns per hit at 4,096 entries, 63 ns and 58 ns at

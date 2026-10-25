@@ -1,7 +1,10 @@
-// rg_hash - Hash functions and typed robin-hood hash tables for C
+// rg_hash - Hash functions and typed open-addressing hash tables for C
 //
 // Part of the Reverse Gravity (rg_) core libraries.
 // Single-header hashes plus arena-backed, macro-generated hash maps and sets.
+// Tables keep a one-byte control tag per slot and probe them a group at a time
+// with SSE2, NEON, or 64-bit arithmetic, so a lookup touches entries only when
+// a tag matches.
 //
 // USAGE:
 //   #include "rg_hash.h"
@@ -17,10 +20,13 @@
 //   #define RG_HASH_MAX_LOAD_NUM    - Load factor numerator (default: 7)
 //   #define RG_HASH_MAX_LOAD_DEN    - Load factor denominator (default: 10)
 //   #define RG_HASH_SEED            - Default hash seed (default: 0)
+//   #define RG_HASH_NO_SIMD         - Probe control bytes with 64-bit arithmetic instead of SSE2/NEON
 //
 // NOTES:
-//   - Hash tables are arena-backed; growth leaves old storage in the arena.
-//   - All slots use hash == 0 as empty; hashes are forced non-zero.
+//   - Hash tables are arena-backed; growth (and the occasional same-size rebuild
+//     that drops tombstones) leaves old storage in the arena.
+//   - entries[i].hash == 0 marks an unoccupied slot; hashes are forced non-zero.
+//     Control bytes decide probing; entry hashes are for iteration and growth.
 //   - Maps and sets are not safe for concurrent mutation.
 //
 // Author: Steven Wendel (superwendel)
@@ -52,8 +58,9 @@
 #define RG_HASH_ASSERT(condition) assert(condition)
 #endif
 
+// Smallest table: one full probe group so every group load stays in bounds.
 #ifndef RG_HASH_MIN_CAP
-#define RG_HASH_MIN_CAP 8
+#define RG_HASH_MIN_CAP 16
 #endif
 
 #ifndef RG_HASH_MAX_LOAD_NUM
@@ -72,8 +79,8 @@
 #define RG_HASH_INVALID SIZE_MAX
 #endif
 
-#if RG_HASH_MIN_CAP == 0
-#error RG_HASH_MIN_CAP must be greater than zero
+#if RG_HASH_MIN_CAP < 16 || (RG_HASH_MIN_CAP & (RG_HASH_MIN_CAP - 1)) != 0
+#error RG_HASH_MIN_CAP must be a power of two of at least 16
 #endif
 
 #if RG_HASH_MAX_LOAD_NUM == 0 || RG_HASH_MAX_LOAD_DEN == 0 || \
@@ -176,8 +183,318 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 // PUBLIC API - Hash Tables
 // =============================================================================
 
+// =============================================================================
+// TABLE MACHINERY - control bytes and group probing
+// =============================================================================
+//
+// Every slot has a control byte: RG_HASH_CTRL_EMPTY, RG_HASH_CTRL_DELETED, or
+// the key's seven-bit tag (hash bits 25..31, which the recommended hash functions
+// spread well and which lie above the index bits of any table below 2^25
+// slots). Lookups compare a whole group of control bytes against the tag with
+// one SIMD instruction and read an entry only on a tag match; a group holding an
+// empty byte ends an unsuccessful search. Groups step through the table with
+// triangular numbers, which visit every group of a power-of-two table. The
+// control array carries RG_HASH_GROUP_WIDTH mirror bytes past the end so group
+// loads never wrap.
+
+#define RG_HASH_CTRL_EMPTY 0x80u
+#define RG_HASH_CTRL_DELETED 0xFEu
+
+#if !defined(RG_HASH_NO_SIMD) && \
+    (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+#include <emmintrin.h>
+#define RG_HASH_GROUP_WIDTH 16
+#define RG_HASH_GROUP_SSE2 1
+#elif !defined(RG_HASH_NO_SIMD) && defined(__ARM_NEON) && (defined(__GNUC__) || defined(__clang__))
+#include <arm_neon.h>
+#define RG_HASH_GROUP_WIDTH 8
+#define RG_HASH_GROUP_NEON 1
+#else
+#define RG_HASH_GROUP_WIDTH 8
+#define RG_HASH_GROUP_SWAR 1
+#endif
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
+
+RGINLINE unsigned rg_hash_ctz64(uint64_t value)
+{
+#if defined(__GNUC__) || defined(__clang__)
+	return (unsigned)__builtin_ctzll(value);
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+	unsigned long index;
+	_BitScanForward64(&index, value);
+	return (unsigned)index;
+#else
+	unsigned n = 0;
+	while ((value & 1u) == 0)
+	{
+		value >>= 1;
+		n++;
+	}
+	return n;
+#endif
+}
+
+RGINLINE unsigned rg_hash_clz64(uint64_t value)
+{
+#if defined(__GNUC__) || defined(__clang__)
+	return (unsigned)__builtin_clzll(value);
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+	unsigned long index;
+	_BitScanReverse64(&index, value);
+	return 63u - (unsigned)index;
+#else
+	unsigned n = 0;
+	while ((value >> 63) == 0)
+	{
+		value <<= 1;
+		n++;
+	}
+	return n;
+#endif
+}
+
+// A group of control bytes and the bit masks the comparisons produce. In the
+// SSE2 backend a mask has one bit per lane; in the NEON and portable backends
+// each lane owns the top bit of its byte, so lane index = bit index / 8.
+#if defined(RG_HASH_GROUP_SSE2)
+typedef __m128i rg_hash_group;
+typedef uint32_t rg_hash_mask;
+#define RG_HASH_MASK_LANE_SHIFT 0
+RGINLINE rg_hash_group rg_hash_group_load(const uint8_t* ctrl) { return _mm_loadu_si128((const __m128i*)ctrl); }
+RGINLINE rg_hash_mask rg_hash_group_match(rg_hash_group g, uint8_t tag)
+{
+	return (rg_hash_mask)_mm_movemask_epi8(_mm_cmpeq_epi8(g, _mm_set1_epi8((char)tag)));
+}
+RGINLINE rg_hash_mask rg_hash_group_match_empty(rg_hash_group g)
+{
+	return (rg_hash_mask)_mm_movemask_epi8(_mm_cmpeq_epi8(g, _mm_set1_epi8((char)RG_HASH_CTRL_EMPTY)));
+}
+RGINLINE rg_hash_mask rg_hash_group_match_free(rg_hash_group g) { return (rg_hash_mask)_mm_movemask_epi8(g); }
+RGINLINE unsigned rg_hash_mask_leading_zeros(rg_hash_mask m) { return rg_hash_clz64(m) - 48u; }
+#elif defined(RG_HASH_GROUP_NEON)
+typedef uint8x8_t rg_hash_group;
+typedef uint64_t rg_hash_mask;
+#define RG_HASH_MASK_LANE_SHIFT 3
+RGINLINE rg_hash_group rg_hash_group_load(const uint8_t* ctrl) { return vld1_u8(ctrl); }
+RGINLINE rg_hash_mask rg_hash_group_match(rg_hash_group g, uint8_t tag)
+{
+	return vget_lane_u64(vreinterpret_u64_u8(vceq_u8(g, vdup_n_u8(tag))), 0) & UINT64_C(0x8080808080808080);
+}
+RGINLINE rg_hash_mask rg_hash_group_match_empty(rg_hash_group g)
+{
+	return vget_lane_u64(vreinterpret_u64_u8(vceq_u8(g, vdup_n_u8((uint8_t)RG_HASH_CTRL_EMPTY))), 0) & UINT64_C(0x8080808080808080);
+}
+RGINLINE rg_hash_mask rg_hash_group_match_free(rg_hash_group g)
+{
+	return vget_lane_u64(vreinterpret_u64_u8(g), 0) & UINT64_C(0x8080808080808080);
+}
+RGINLINE unsigned rg_hash_mask_leading_zeros(rg_hash_mask m) { return rg_hash_clz64(m) >> 3; }
+#else
+typedef uint64_t rg_hash_group;
+typedef uint64_t rg_hash_mask;
+#define RG_HASH_MASK_LANE_SHIFT 3
+RGINLINE rg_hash_group rg_hash_group_load(const uint8_t* ctrl)
+{
+	uint64_t v;
+	memcpy(&v, ctrl, sizeof(v));
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	v = rg_hash_bswap64(v);
+#endif
+	return v;
+}
+// Zero-byte detection. It can report a false match in the byte after a true
+// zero, which the entry comparison rejects; it never misses a match.
+RGINLINE rg_hash_mask rg_hash_group_match(rg_hash_group g, uint8_t tag)
+{
+	uint64_t x = g ^ (UINT64_C(0x0101010101010101) * tag);
+	return (x - UINT64_C(0x0101010101010101)) & ~x & UINT64_C(0x8080808080808080);
+}
+// 0x80 exactly: top bit set and bit six clear.
+RGINLINE rg_hash_mask rg_hash_group_match_empty(rg_hash_group g)
+{
+	return g & (~g << 1) & UINT64_C(0x8080808080808080);
+}
+RGINLINE rg_hash_mask rg_hash_group_match_free(rg_hash_group g) { return g & UINT64_C(0x8080808080808080); }
+RGINLINE unsigned rg_hash_mask_leading_zeros(rg_hash_mask m) { return rg_hash_clz64(m) >> 3; }
+#endif
+
+// Lowest matching lane, and the mask with that lane cleared.
+RGINLINE unsigned rg_hash_mask_first(rg_hash_mask m) { return rg_hash_ctz64(m) >> RG_HASH_MASK_LANE_SHIFT; }
+RGINLINE rg_hash_mask rg_hash_mask_clear_first(rg_hash_mask m) { return m & (m - 1u); }
+// Bit of lane 0 (the home slot) in a mask.
+#define RG_HASH_MASK_LANE0 ((rg_hash_mask)(RG_HASH_MASK_LANE_SHIFT ? 0x80u : 0x1u))
+
+RGINLINE uint8_t rg_hash_tag(uint64_t hash) { return (uint8_t)((hash >> 25) & 0x7Fu); }
+
+// Writes a control byte and its mirror past the end of the table.
+RGINLINE void rg_hash_ctrl_set(uint8_t* ctrl, size_t cap, size_t index, uint8_t value)
+{
+	ctrl[index] = value;
+	ctrl[((index - RG_HASH_GROUP_WIDTH) & (cap - 1)) + RG_HASH_GROUP_WIDTH] = value;
+}
+
+RGINLINE void rg_hash_ctrl_reset(uint8_t* ctrl, size_t cap)
+{
+	memset(ctrl, (int)RG_HASH_CTRL_EMPTY, cap + RG_HASH_GROUP_WIDTH);
+}
+
+// Entries the table admits before it must grow or rebuild.
+RGINLINE size_t rg_hash_growth_for(size_t cap)
+{
+	return cap / (size_t)RG_HASH_MAX_LOAD_DEN * (size_t)RG_HASH_MAX_LOAD_NUM +
+	       cap % (size_t)RG_HASH_MAX_LOAD_DEN * (size_t)RG_HASH_MAX_LOAD_NUM / (size_t)RG_HASH_MAX_LOAD_DEN;
+}
+
+// First empty or deleted slot on the key's probe sequence. The caller has
+// established that the key is absent.
+RGINLINE size_t rg_hash_find_free_slot(const uint8_t* ctrl, size_t cap, uint64_t hash)
+{
+	size_t mask = cap - 1;
+	size_t pos = (size_t)hash & mask;
+	size_t step = RG_HASH_GROUP_WIDTH;
+	for (;;)
+	{
+		rg_hash_mask free_lanes = rg_hash_group_match_free(rg_hash_group_load(ctrl + pos));
+		if (free_lanes)
+		{
+			return (pos + rg_hash_mask_first(free_lanes)) & mask;
+		}
+		pos = (pos + step) & mask;
+		step += RG_HASH_GROUP_WIDTH;
+	}
+}
+
+// Marks a slot unoccupied. It becomes EMPTY when no probe sequence can have
+// skipped past it (some group window around it already holds an empty byte),
+// otherwise DELETED so later lookups keep probing. Returns 1 for EMPTY.
+RGINLINE int rg_hash_ctrl_remove(uint8_t* ctrl, size_t cap, size_t index)
+{
+	size_t mask = cap - 1;
+	size_t before = (index - RG_HASH_GROUP_WIDTH) & mask;
+	rg_hash_mask empty_after = rg_hash_group_match_empty(rg_hash_group_load(ctrl + index));
+	rg_hash_mask empty_before = rg_hash_group_match_empty(rg_hash_group_load(ctrl + before));
+	int never_full = empty_before != 0 && empty_after != 0 &&
+	                 rg_hash_mask_first(empty_after) + rg_hash_mask_leading_zeros(empty_before) < RG_HASH_GROUP_WIDTH;
+	rg_hash_ctrl_set(ctrl, cap, index, (uint8_t)(never_full ? RG_HASH_CTRL_EMPTY : RG_HASH_CTRL_DELETED));
+	return never_full;
+}
+
+// =============================================================================
+// TABLE DEFINITIONS
+// =============================================================================
+
+// Shared by the map and set macros: lookup by prepared hash. Expands to a loop
+// that returns the entry index or RG_HASH_INVALID. The home lane is tested
+// before the generic match loop: its entry address does not depend on the
+// control bytes, so a predicted hit issues the entry load while the control
+// group is still arriving, and the two cache misses overlap. A miss still ends
+// on the control group alone. (Prefetching the home entry instead measured no
+// better on hits and worse on misses.)
+#define RG_HASH_FIND_LOOP(table, entries_field, key, hash, eq_call) \
+	do \
+	{ \
+		if ((table)->cap == 0) \
+		{ \
+			return RG_HASH_INVALID; \
+		} \
+		size_t _rg_mask = (table)->cap - 1; \
+		size_t _rg_pos = (size_t)(hash) & _rg_mask; \
+		size_t _rg_step = RG_HASH_GROUP_WIDTH; \
+		uint8_t _rg_tag = rg_hash_tag(hash); \
+		rg_hash_group _rg_group = rg_hash_group_load((table)->ctrl + _rg_pos); \
+		rg_hash_mask _rg_matches = rg_hash_group_match(_rg_group, _rg_tag); \
+		if (_rg_matches & RG_HASH_MASK_LANE0) \
+		{ \
+			if ((table)->entries_field[_rg_pos].hash == (hash) && eq_call((table)->entries_field[_rg_pos].key, (key))) \
+			{ \
+				return _rg_pos; \
+			} \
+			_rg_matches &= ~(rg_hash_mask)RG_HASH_MASK_LANE0; \
+		} \
+		for (;;) \
+		{ \
+			while (_rg_matches) \
+			{ \
+				size_t _rg_idx = (_rg_pos + rg_hash_mask_first(_rg_matches)) & _rg_mask; \
+				if ((table)->entries_field[_rg_idx].hash == (hash) && eq_call((table)->entries_field[_rg_idx].key, (key))) \
+				{ \
+					return _rg_idx; \
+				} \
+				_rg_matches = rg_hash_mask_clear_first(_rg_matches); \
+			} \
+			if (rg_hash_group_match_empty(_rg_group)) \
+			{ \
+				return RG_HASH_INVALID; \
+			} \
+			_rg_pos = (_rg_pos + _rg_step) & _rg_mask; \
+			_rg_step += RG_HASH_GROUP_WIDTH; \
+			_rg_group = rg_hash_group_load((table)->ctrl + _rg_pos); \
+			_rg_matches = rg_hash_group_match(_rg_group, _rg_tag); \
+		} \
+	} while (0)
+
+// Allocates control bytes and entries for new_cap slots and reinserts the
+// occupied entries of the old arrays from their stored hashes. Leaves the table
+// unchanged when the arena cannot satisfy the allocation.
+#define RG_HASH_REBUILD_BODY(table, EntryType, new_cap) \
+	EntryType* _rg_old_entries = (table)->entries; \
+	size_t _rg_old_cap = (table)->cap; \
+	uint8_t* _rg_ctrl = (uint8_t*)rg_arena_alloc_aligned((table)->arena, (new_cap) + RG_HASH_GROUP_WIDTH, 16); \
+	if (_rg_ctrl == NULL) \
+	{ \
+		RG_HASH_ASSERT(0 && "rg_hash: arena exhausted"); \
+		return 0; \
+	} \
+	EntryType* _rg_entries = (EntryType*)rg_arena_alloc_array((table)->arena, sizeof(EntryType), (new_cap), RG_ALIGNOF(EntryType)); \
+	if (_rg_entries == NULL) \
+	{ \
+		RG_HASH_ASSERT(0 && "rg_hash: arena exhausted"); \
+		return 0; \
+	} \
+	rg_hash_ctrl_reset(_rg_ctrl, (new_cap)); \
+	memset(_rg_entries, 0, (new_cap) * sizeof(EntryType)); \
+	(table)->ctrl = _rg_ctrl; \
+	(table)->entries = _rg_entries; \
+	(table)->cap = (new_cap); \
+	(table)->growth_left = rg_hash_growth_for(new_cap); \
+	if (_rg_old_entries != NULL) \
+	{ \
+		for (size_t _rg_i = 0; _rg_i < _rg_old_cap; _rg_i++) \
+		{ \
+			if (_rg_old_entries[_rg_i].hash != 0) \
+			{ \
+				size_t _rg_slot = rg_hash_find_free_slot(_rg_ctrl, (new_cap), _rg_old_entries[_rg_i].hash); \
+				rg_hash_ctrl_set(_rg_ctrl, (new_cap), _rg_slot, rg_hash_tag(_rg_old_entries[_rg_i].hash)); \
+				_rg_entries[_rg_slot] = _rg_old_entries[_rg_i]; \
+			} \
+		} \
+	} \
+	(table)->growth_left -= (table)->count; \
+	return 1;
+
+// Makes room for one more new key: grows when the live entries would exceed
+// half the load limit of the current size, otherwise rebuilds at the same size
+// to drop tombstones.
+#define RG_HASH_MAKE_ROOM_BODY(table, rebuild_fn) \
+	if ((table)->cap == 0) \
+	{ \
+		return rebuild_fn((table), (size_t)RG_HASH_MIN_CAP); \
+	} \
+	if ((table)->count + 1 > rg_hash_growth_for((table)->cap) / 2) \
+	{ \
+		if ((table)->cap > SIZE_MAX / 2) \
+		{ \
+			return 0; \
+		} \
+		return rebuild_fn((table), (table)->cap * 2); \
+	} \
+	return rebuild_fn((table), (table)->cap);
+
 /**
- * @brief Define a typed robin-hood hash map
+ * @brief Define a typed hash map
  * @param key_type Key type
  * @param value_type Value type
  * @param name Map type name
@@ -196,8 +513,10 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 	typedef struct name \
 	{ \
 		name##_Entry* entries; \
+		uint8_t* ctrl; \
 		size_t cap; \
 		size_t count; \
+		size_t growth_left; \
 		RgArena* arena; \
 	} name; \
 	RGINLINE uint64_t rg_hash_map_hash_##name(name##_Key key) \
@@ -211,8 +530,10 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 	RGINLINE void rg_hash_map_init_##name(name* map, RgArena* arena) \
 	{ \
 		map->entries = NULL; \
+		map->ctrl = NULL; \
 		map->cap = 0; \
 		map->count = 0; \
+		map->growth_left = 0; \
 		map->arena = arena; \
 	} \
 	RGINLINE void rg_hash_map_clear_##name(name* map) \
@@ -220,44 +541,23 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 		if (map->entries != NULL) \
 		{ \
 			memset(map->entries, 0, map->cap * sizeof(name##_Entry)); \
+			rg_hash_ctrl_reset(map->ctrl, map->cap); \
+			map->growth_left = rg_hash_growth_for(map->cap); \
 		} \
 		map->count = 0; \
 	} \
 	RGINLINE void rg_hash_map_free_##name(name* map) \
 	{ \
 		map->entries = NULL; \
+		map->ctrl = NULL; \
 		map->cap = 0; \
 		map->count = 0; \
+		map->growth_left = 0; \
 		map->arena = NULL; \
 	} \
 	RGINLINE size_t rg_hash_map_find_index_hashed_##name(const name* map, name##_Key key, uint64_t hash) \
 	{ \
-		if (map->cap == 0) \
-		{ \
-			return RG_HASH_INVALID; \
-		} \
-		size_t mask = map->cap - 1; \
-		size_t idx = (size_t)(hash & mask); \
-		size_t dist = 0; \
-		for (;;) \
-		{ \
-			const name##_Entry* entry = &map->entries[idx]; \
-			if (entry->hash == 0) \
-			{ \
-				return RG_HASH_INVALID; \
-			} \
-			size_t entry_dist = rg_hash_probe_distance(entry->hash, idx, mask); \
-			if (entry_dist < dist) \
-			{ \
-				return RG_HASH_INVALID; \
-			} \
-			if (entry->hash == hash && rg_hash_map_eq_##name(entry->key, key)) \
-			{ \
-				return idx; \
-			} \
-			idx = (idx + 1) & mask; \
-			dist++; \
-		} \
+		RG_HASH_FIND_LOOP(map, entries, key, hash, rg_hash_map_eq_##name); \
 	} \
 	RGINLINE size_t rg_hash_map_find_index_##name(const name* map, name##_Key key) \
 	{ \
@@ -286,58 +586,13 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 		} \
 		return &map->entries[idx].value; \
 	} \
-	RGINLINE void rg_hash_map_insert_entry_##name(name* map, name##_Entry entry) \
-	{ \
-		size_t mask = map->cap - 1; \
-		size_t idx = (size_t)(entry.hash & mask); \
-		size_t dist = 0; \
-		for (;;) \
-		{ \
-			name##_Entry* slot = &map->entries[idx]; \
-			if (slot->hash == 0) \
-			{ \
-				*slot = entry; \
-				map->count++; \
-				return; \
-			} \
-			size_t slot_dist = rg_hash_probe_distance(slot->hash, idx, mask); \
-			if (slot_dist < dist) \
-			{ \
-				name##_Entry tmp = *slot; \
-				*slot = entry; \
-				entry = tmp; \
-				dist = slot_dist; \
-			} \
-			idx = (idx + 1) & mask; \
-			dist++; \
-		} \
-	} \
 	RG_HASH_COLD int rg_hash_map_rehash_##name(name* map, size_t new_cap) \
 	{ \
-		name##_Entry* old_entries = map->entries; \
-		size_t old_cap = map->cap; \
-		name##_Entry* new_entries = (name##_Entry*)rg_arena_alloc_array( \
-		    map->arena, sizeof(name##_Entry), new_cap, RG_ALIGNOF(name##_Entry)); \
-		RG_HASH_ASSERT(new_entries != NULL); \
-		if (new_entries == NULL) \
-		{ \
-			return 0; \
-		} \
-		map->entries = new_entries; \
-		map->cap = new_cap; \
-		map->count = 0; \
-		memset(map->entries, 0, new_cap * sizeof(name##_Entry)); \
-		if (old_entries != NULL) \
-		{ \
-			for (size_t i = 0; i < old_cap; i++) \
-			{ \
-				if (old_entries[i].hash != 0) \
-				{ \
-					rg_hash_map_insert_entry_##name(map, old_entries[i]); \
-				} \
-			} \
-		} \
-		return 1; \
+		RG_HASH_REBUILD_BODY(map, name##_Entry, new_cap) \
+	} \
+	RG_HASH_COLD int rg_hash_map_make_room_##name(name* map) \
+	{ \
+		RG_HASH_MAKE_ROOM_BODY(map, rg_hash_map_rehash_##name) \
 	} \
 	RGINLINE int rg_hash_map_reserve_##name(name* map, size_t min_count) \
 	{ \
@@ -367,19 +622,17 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 			map->entries[idx].value = value; \
 			return 0; \
 		} \
-		if (rg_hash_should_grow(map->count, map->cap)) \
+		if (map->growth_left == 0 && !rg_hash_map_make_room_##name(map)) \
 		{ \
-			if (map->count == SIZE_MAX || \
-			    !rg_hash_map_reserve_##name(map, map->count + 1)) \
-			{ \
-				return -1; \
-			} \
+			return -1; \
 		} \
-		name##_Entry entry; \
-		entry.hash = hash; \
-		entry.key = key; \
-		entry.value = value; \
-		rg_hash_map_insert_entry_##name(map, entry); \
+		idx = rg_hash_find_free_slot(map->ctrl, map->cap, hash); \
+		map->growth_left -= map->ctrl[idx] == RG_HASH_CTRL_EMPTY; \
+		rg_hash_ctrl_set(map->ctrl, map->cap, idx, rg_hash_tag(hash)); \
+		map->entries[idx].hash = hash; \
+		map->entries[idx].key = key; \
+		map->entries[idx].value = value; \
+		map->count++; \
 		return 1; \
 	} \
 	RGINLINE int rg_hash_map_remove_##name(name* map, name##_Key key) \
@@ -389,22 +642,14 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 		{ \
 			return 0; \
 		} \
-		size_t mask = map->cap - 1; \
-		size_t next = (idx + 1) & mask; \
-		while (map->entries[next].hash != 0 && \
-		    rg_hash_probe_distance(map->entries[next].hash, next, mask) > 0) \
-		{ \
-			map->entries[idx] = map->entries[next]; \
-			idx = next; \
-			next = (next + 1) & mask; \
-		} \
+		map->growth_left += (size_t)rg_hash_ctrl_remove(map->ctrl, map->cap, idx); \
 		map->entries[idx].hash = 0; \
 		map->count--; \
 		return 1; \
 	}
 
 /**
- * @brief Define a typed robin-hood hash set
+ * @brief Define a typed hash set
  * @param key_type Key type
  * @param name Set type name
  * @param hash_fn Hash function (uint64_t fn(key_type))
@@ -420,8 +665,10 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 	typedef struct name \
 	{ \
 		name##_Entry* entries; \
+		uint8_t* ctrl; \
 		size_t cap; \
 		size_t count; \
+		size_t growth_left; \
 		RgArena* arena; \
 	} name; \
 	RGINLINE uint64_t rg_hash_set_hash_##name(name##_Key key) \
@@ -435,8 +682,10 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 	RGINLINE void rg_hash_set_init_##name(name* set, RgArena* arena) \
 	{ \
 		set->entries = NULL; \
+		set->ctrl = NULL; \
 		set->cap = 0; \
 		set->count = 0; \
+		set->growth_left = 0; \
 		set->arena = arena; \
 	} \
 	RGINLINE void rg_hash_set_clear_##name(name* set) \
@@ -444,44 +693,23 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 		if (set->entries != NULL) \
 		{ \
 			memset(set->entries, 0, set->cap * sizeof(name##_Entry)); \
+			rg_hash_ctrl_reset(set->ctrl, set->cap); \
+			set->growth_left = rg_hash_growth_for(set->cap); \
 		} \
 		set->count = 0; \
 	} \
 	RGINLINE void rg_hash_set_free_##name(name* set) \
 	{ \
 		set->entries = NULL; \
+		set->ctrl = NULL; \
 		set->cap = 0; \
 		set->count = 0; \
+		set->growth_left = 0; \
 		set->arena = NULL; \
 	} \
 	RGINLINE size_t rg_hash_set_find_index_hashed_##name(const name* set, name##_Key key, uint64_t hash) \
 	{ \
-		if (set->cap == 0) \
-		{ \
-			return RG_HASH_INVALID; \
-		} \
-		size_t mask = set->cap - 1; \
-		size_t idx = (size_t)(hash & mask); \
-		size_t dist = 0; \
-		for (;;) \
-		{ \
-			const name##_Entry* entry = &set->entries[idx]; \
-			if (entry->hash == 0) \
-			{ \
-				return RG_HASH_INVALID; \
-			} \
-			size_t entry_dist = rg_hash_probe_distance(entry->hash, idx, mask); \
-			if (entry_dist < dist) \
-			{ \
-				return RG_HASH_INVALID; \
-			} \
-			if (entry->hash == hash && rg_hash_set_eq_##name(entry->key, key)) \
-			{ \
-				return idx; \
-			} \
-			idx = (idx + 1) & mask; \
-			dist++; \
-		} \
+		RG_HASH_FIND_LOOP(set, entries, key, hash, rg_hash_set_eq_##name); \
 	} \
 	RGINLINE size_t rg_hash_set_find_index_##name(const name* set, name##_Key key) \
 	{ \
@@ -496,58 +724,13 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 	{ \
 		return rg_hash_set_find_index_##name(set, key) != RG_HASH_INVALID; \
 	} \
-	RGINLINE void rg_hash_set_insert_entry_##name(name* set, name##_Entry entry) \
-	{ \
-		size_t mask = set->cap - 1; \
-		size_t idx = (size_t)(entry.hash & mask); \
-		size_t dist = 0; \
-		for (;;) \
-		{ \
-			name##_Entry* slot = &set->entries[idx]; \
-			if (slot->hash == 0) \
-			{ \
-				*slot = entry; \
-				set->count++; \
-				return; \
-			} \
-			size_t slot_dist = rg_hash_probe_distance(slot->hash, idx, mask); \
-			if (slot_dist < dist) \
-			{ \
-				name##_Entry tmp = *slot; \
-				*slot = entry; \
-				entry = tmp; \
-				dist = slot_dist; \
-			} \
-			idx = (idx + 1) & mask; \
-			dist++; \
-		} \
-	} \
 	RG_HASH_COLD int rg_hash_set_rehash_##name(name* set, size_t new_cap) \
 	{ \
-		name##_Entry* old_entries = set->entries; \
-		size_t old_cap = set->cap; \
-		name##_Entry* new_entries = (name##_Entry*)rg_arena_alloc_array( \
-		    set->arena, sizeof(name##_Entry), new_cap, RG_ALIGNOF(name##_Entry)); \
-		RG_HASH_ASSERT(new_entries != NULL); \
-		if (new_entries == NULL) \
-		{ \
-			return 0; \
-		} \
-		set->entries = new_entries; \
-		set->cap = new_cap; \
-		set->count = 0; \
-		memset(set->entries, 0, new_cap * sizeof(name##_Entry)); \
-		if (old_entries != NULL) \
-		{ \
-			for (size_t i = 0; i < old_cap; i++) \
-			{ \
-				if (old_entries[i].hash != 0) \
-				{ \
-					rg_hash_set_insert_entry_##name(set, old_entries[i]); \
-				} \
-			} \
-		} \
-		return 1; \
+		RG_HASH_REBUILD_BODY(set, name##_Entry, new_cap) \
+	} \
+	RG_HASH_COLD int rg_hash_set_make_room_##name(name* set) \
+	{ \
+		RG_HASH_MAKE_ROOM_BODY(set, rg_hash_set_rehash_##name) \
 	} \
 	RGINLINE int rg_hash_set_reserve_##name(name* set, size_t min_count) \
 	{ \
@@ -571,22 +754,21 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 	{ \
 		RG_HASH_ASSERT(set->arena != NULL); \
 		uint64_t hash = rg_hash_prepare(rg_hash_set_hash_##name(key)); \
-		if (rg_hash_set_find_index_hashed_##name(set, key, hash) != RG_HASH_INVALID) \
+		size_t idx = rg_hash_set_find_index_hashed_##name(set, key, hash); \
+		if (idx != RG_HASH_INVALID) \
 		{ \
 			return 0; \
 		} \
-		if (rg_hash_should_grow(set->count, set->cap)) \
+		if (set->growth_left == 0 && !rg_hash_set_make_room_##name(set)) \
 		{ \
-			if (set->count == SIZE_MAX || \
-			    !rg_hash_set_reserve_##name(set, set->count + 1)) \
-			{ \
-				return -1; \
-			} \
+			return -1; \
 		} \
-		name##_Entry entry; \
-		entry.hash = hash; \
-		entry.key = key; \
-		rg_hash_set_insert_entry_##name(set, entry); \
+		idx = rg_hash_find_free_slot(set->ctrl, set->cap, hash); \
+		set->growth_left -= set->ctrl[idx] == RG_HASH_CTRL_EMPTY; \
+		rg_hash_ctrl_set(set->ctrl, set->cap, idx, rg_hash_tag(hash)); \
+		set->entries[idx].hash = hash; \
+		set->entries[idx].key = key; \
+		set->count++; \
 		return 1; \
 	} \
 	RGINLINE int rg_hash_set_remove_##name(name* set, name##_Key key) \
@@ -596,21 +778,12 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 		{ \
 			return 0; \
 		} \
-		size_t mask = set->cap - 1; \
-		size_t next = (idx + 1) & mask; \
-		while (set->entries[next].hash != 0 && \
-		    rg_hash_probe_distance(set->entries[next].hash, next, mask) > 0) \
-		{ \
-			set->entries[idx] = set->entries[next]; \
-			idx = next; \
-			next = (next + 1) & mask; \
-		} \
+		set->growth_left += (size_t)rg_hash_ctrl_remove(set->ctrl, set->cap, idx); \
 		set->entries[idx].hash = 0; \
 		set->count--; \
 		return 1; \
 	}
 
-// Convenience wrappers (use with RG_HASH_MAP_DEFINE / RG_HASH_SET_DEFINE types)
 #define rg_hash_map_init(name, map, arena) rg_hash_map_init_##name((map), (arena))
 #define rg_hash_map_reserve(name, map, min_count) rg_hash_map_reserve_##name((map), (min_count))
 #define rg_hash_map_clear(name, map) rg_hash_map_clear_##name((map))
@@ -938,10 +1111,6 @@ RGINLINE uint64_t rg_hash_prepare(uint64_t hash)
 	return hash == 0 ? 1 : hash;
 }
 
-RGINLINE size_t rg_hash_probe_distance(uint64_t hash, size_t index, size_t mask)
-{
-	return (index - (hash & mask)) & mask;
-}
 
 RGINLINE size_t rg_hash_pow2_ceil(size_t value)
 {
