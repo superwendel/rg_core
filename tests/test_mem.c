@@ -214,8 +214,9 @@ static void test_typed_macros(void)
 static void test_pool_first_touch(void)
 {
 	reset_pool();
-	CHECK(RG_MALLOC_PREFAULT == 0 || RG_MALLOC_PREFAULT == 1);
-	CHECK(RG_MALLOC_HUGE_PAGES == 0 || RG_MALLOC_HUGE_PAGES == 1);
+#if (RG_MALLOC_PREFAULT != 0 && RG_MALLOC_PREFAULT != 1) || (RG_MALLOC_HUGE_PAGES != 0 && RG_MALLOC_HUGE_PAGES != 1)
+#error RG_MALLOC_PREFAULT and RG_MALLOC_HUGE_PAGES must be 0 or 1
+#endif
 	CHECK(rg_malloc(MB(4)) == 0);
 	RgArena arena = rg_arena_create(MB(2));
 	CHECK(arena.memory != NULL);

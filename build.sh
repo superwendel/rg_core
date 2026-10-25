@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Native Linux builds. Windows builds remain available through build.bat.
-set -euo pipefail
+# No -u: macOS ships bash 3.2, which treats the empty flag arrays below as
+# unbound variables when expanded with "${array[@]}".
+set -eo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 test_output="$repo/.test-build/linux"
