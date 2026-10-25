@@ -464,29 +464,24 @@ RGINLINE void rg_quat_mul(const rg_quat* a, const rg_quat* b, rg_quat* out)
 
 RGINLINE void rg_quat_normalize(const rg_quat* q, rg_quat* out)
 {
-#ifdef RG_MATH_SSE
-#if RG_MATH_MAX_PERF
-	{
-		__m128 v = q->simd;
-		__m128 dot = rg_math_quat_dot4_ps(v, v);
+#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+	__m128 v = q->simd;
+	__m128 dot = rg_math_quat_dot4_ps(v, v);
 #ifndef RG_MATH_UNSAFE_NORMALIZE
-		f32 len_sq = _mm_cvtss_f32(dot);
-		if (len_sq < RG_EPSILON * RG_EPSILON)
-		{
-			rg_quat_identity(out);
-			return;
-		}
-#endif
-#ifdef RG_MATH_FAST_NORMALIZE
-		__m128 inv = rg_math_rsqrt_ps(dot);
-#else
-		__m128 inv = _mm_div_ps(_mm_set1_ps(1.0f), _mm_sqrt_ps(dot));
-#endif
-		out->simd = _mm_mul_ps(v, inv);
+	f32 len_sq = _mm_cvtss_f32(dot);
+	if (len_sq < RG_EPSILON * RG_EPSILON)
+	{
+		rg_quat_identity(out);
 		return;
 	}
 #endif
+#ifdef RG_MATH_FAST_NORMALIZE
+	__m128 inv = rg_math_rsqrt_ps(dot);
+#else
+	__m128 inv = _mm_div_ps(_mm_set1_ps(1.0f), _mm_sqrt_ps(dot));
 #endif
+	out->simd = _mm_mul_ps(v, inv);
+#else
 	f32 len_sq = rg_quat_dot(q, q);
 #ifndef RG_MATH_UNSAFE_NORMALIZE
 	if (len_sq < RG_EPSILON * RG_EPSILON)
@@ -508,6 +503,7 @@ RGINLINE void rg_quat_normalize(const rg_quat* q, rg_quat* out)
 	out->y = q->y * inv_len;
 	out->z = q->z * inv_len;
 	out->w = q->w * inv_len;
+#endif
 #endif
 }
 
