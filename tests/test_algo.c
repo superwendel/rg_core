@@ -487,7 +487,7 @@ static void test_sort_element_sizes(void)
 		for (size_t j = 0; j < COUNT; j++)
 		{
 			found += (bytes_ref[j] == bytes[i]);
-			found += (triple_keys[j] == bytes3_key(&triples[i])) << 8u;
+			found += (size_t)(triple_keys[j] == bytes3_key(&triples[i])) << 8u;
 		}
 		TEST_ASSERT((found & 0xffu) > 0u, "1-byte multiset preserved");
 		TEST_ASSERT((found >> 8u) > 0u, "3-byte multiset preserved");

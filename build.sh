@@ -17,6 +17,8 @@ read -r -a user_cflags <<< "${CFLAGS:-}"
 read -r -a user_cxxflags <<< "${CXXFLAGS:-}"
 read -r -a user_ldflags <<< "${LDFLAGS:-}"
 feature_flags=(-D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L)
+# _POSIX_C_SOURCE alone hides BSD extensions such as MAP_ANON on macOS.
+if [[ $(uname -s) == Darwin ]]; then feature_flags+=(-D_DARWIN_C_SOURCE); fi
 test_flags=(-std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function
     "${feature_flags[@]}" "${user_cppflags[@]}" "${user_cflags[@]}")
 bench_flags=(-O2 -DNDEBUG -Wall -Wextra -Wno-unused-function
