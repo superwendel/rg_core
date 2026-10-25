@@ -1292,8 +1292,9 @@ static void test_regressions(void)
 		rg_mat4 singular, inverse;
 		int asserts_before = math_assert_failures;
 		int finite = 0;
+		volatile f32 opaque_zero = 0.0f; // keeps the compiler from folding the division by zero
 		rg_mat4_identity(&singular);
-		singular.m[0] = 0.0f; // zero first column
+		singular.m[0] = opaque_zero; // zero first column
 		rg_mat4_inv(&singular, &inverse);
 		CHECK(math_assert_failures == asserts_before + 1);
 		for (i32 i = 0; i < 16; ++i)
