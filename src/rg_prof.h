@@ -26,10 +26,14 @@
 //   #define RG_PROF_ASSERT(x)                 - Custom assertion macro
 //   #define RG_PROF_DEFAULT_MAX_THREADS       - Default thread count (8)
 //   #define RG_PROF_DEFAULT_EVENTS_PER_THREAD - Default events per thread (16384)
+//   #define RG_PROF_ATOMICS 0                 - Plain stores instead of release/acquire
+//                                               on the event count (default: 1)
 //
 // NOTES:
 //   - Register threads during setup, then give each OS thread its own handle.
 //   - Recording is lock-free; reset and consume a thread only while it is idle.
+//   - rg_prof_set_thread stores into a per-translation-unit thread-local; in a
+//     non-unity build every TU that records must set it for each thread.
 //   - Event and thread names are borrowed pointers and must remain alive.
 //   - break/continue close RG_PROF_SCOPE but apply to its macro loop, not an
 //     enclosing application loop. return/goto require an explicit scope.
@@ -71,8 +75,81 @@
 #error RG_CACHE_LINE_SIZE must be a power of two of at least 32 bytes
 #endif
 
+// Event-count publication. Recording is single-writer per thread; the count
+// is stored with release semantics after the event is filled so a consumer
+// that acquire-loads it sees complete events. On x86 both are plain moves.
+#ifndef RG_PROF_ATOMICS
+#if RG_COMPILER_GCC || RG_COMPILER_CLANG || RG_COMPILER_MSVC
+#define RG_PROF_ATOMICS 1
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && \
+    !defined(__STDC_NO_ATOMICS__) && !defined(__cplusplus)
+#define RG_PROF_ATOMICS 1
+#else
+#define RG_PROF_ATOMICS 0
+#endif
+#endif
+
+#if RG_PROF_ATOMICS != 0 && RG_PROF_ATOMICS != 1
+#error RG_PROF_ATOMICS must be 0 or 1
+#endif
+
+#if !RG_PROF_ATOMICS
+RGINLINE void rg_prof_store_release_u32(u32* ptr, u32 value)
+{
+	*ptr = value;
+}
+RGINLINE u32 rg_prof_load_acquire_u32(const u32* ptr)
+{
+	return *ptr;
+}
+#elif RG_COMPILER_GCC || RG_COMPILER_CLANG
+RGINLINE void rg_prof_store_release_u32(u32* ptr, u32 value)
+{
+	__atomic_store_n(ptr, value, __ATOMIC_RELEASE);
+}
+RGINLINE u32 rg_prof_load_acquire_u32(const u32* ptr)
+{
+	return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
+}
+#elif RG_COMPILER_MSVC
+#include <intrin.h>
+#if RG_ARCH_X64 || RG_ARCH_X86
+// x86 keeps stores in order and loads in order, so a compiler barrier suffices.
+RGINLINE void rg_prof_store_release_u32(u32* ptr, u32 value)
+{
+	_ReadWriteBarrier();
+	*(volatile u32*)ptr = value;
+}
+RGINLINE u32 rg_prof_load_acquire_u32(const u32* ptr)
+{
+	u32 value = *(const volatile u32*)ptr;
+	_ReadWriteBarrier();
+	return value;
+}
+#else
+RGINLINE void rg_prof_store_release_u32(u32* ptr, u32 value)
+{
+	_InterlockedExchange((volatile long*)ptr, (long)value);
+}
+RGINLINE u32 rg_prof_load_acquire_u32(const u32* ptr)
+{
+	return (u32)_InterlockedOr((volatile long*)ptr, 0);
+}
+#endif
+#else
+#include <stdatomic.h>
+RGINLINE void rg_prof_store_release_u32(u32* ptr, u32 value)
+{
+	atomic_store_explicit((_Atomic u32*)ptr, value, memory_order_release);
+}
+RGINLINE u32 rg_prof_load_acquire_u32(const u32* ptr)
+{
+	return atomic_load_explicit((const _Atomic u32*)ptr, memory_order_acquire);
+}
+#endif
+
 typedef struct RgProfThread RgProfThread;
-typedef struct RgProfThreadSlot RgProfThreadSlot;
+typedef union RgProfThreadSlot RgProfThreadSlot;
 
 typedef enum RgProfEventType
 {
@@ -98,6 +175,8 @@ typedef struct RgProf
 	RgArena* arena;
 	RgProfThreadSlot* thread_slots;
 	u64 ticks_per_second;
+	f64 ms_per_tick;
+	f64 us_per_tick;
 	u32 max_threads;
 	u32 thread_count;
 	u32 events_per_thread;
@@ -112,16 +191,18 @@ struct RgProfThread
 	u32 count;
 	u32 dropped;
 	u32 id;
-	u16 depth;
-	u8 frame_open;
-	u8 reserved;
+	u32 depth;
 	u64 completed_frames;
+	u32 frame_open;
+	u32 reserved;
 };
 
-struct RgProfThreadSlot
+// One cache line per registered thread; the byte array pads the slot without
+// a zero-length member when the thread record fills the line exactly.
+union RgProfThreadSlot
 {
 	RgProfThread thread;
-	u8 padding[RG_CACHE_LINE_SIZE - sizeof(RgProfThread)];
+	u8 bytes[RG_CACHE_LINE_SIZE];
 };
 
 typedef char RgProfEventMustFit32Bytes[(sizeof(RgProfEvent) <= 32u) ? 1 : -1];
@@ -133,7 +214,6 @@ typedef struct RgProfScope
 	RgProfThread* thread;
 	RgProfEvent* event;
 	i32 active;
-	i32 depth_incremented;
 } RgProfScope;
 
 typedef struct RgProfFrameSample
@@ -249,14 +329,14 @@ RGINLINE f64 rg_prof_ticks_to_us(const RgProf* prof, u64 ticks)
 {
 	RG_PROF_ASSERT(prof != NULL);
 	if (prof == NULL || prof->ticks_per_second == 0u) return 0.0;
-	return (f64)ticks * 1000000.0 / (f64)prof->ticks_per_second;
+	return (f64)ticks * prof->us_per_tick;
 }
 
 RGINLINE f64 rg_prof_ticks_to_ms(const RgProf* prof, u64 ticks)
 {
 	RG_PROF_ASSERT(prof != NULL);
 	if (prof == NULL || prof->ticks_per_second == 0u) return 0.0;
-	return (f64)ticks * 1000.0 / (f64)prof->ticks_per_second;
+	return (f64)ticks * prof->ms_per_tick;
 }
 
 RGINLINE int rg_prof_init(RgProf* prof, RgArena* arena, u32 max_threads, u32 events_per_thread)
@@ -294,6 +374,8 @@ RGINLINE int rg_prof_init(RgProf* prof, RgArena* arena, u32 max_threads, u32 eve
 		memset(prof, 0, sizeof(*prof));
 		return 0;
 	}
+	prof->ms_per_tick = 1000.0 / (f64)prof->ticks_per_second;
+	prof->us_per_tick = 1000000.0 / (f64)prof->ticks_per_second;
 
 	return 1;
 }
@@ -319,9 +401,11 @@ RGINLINE RgProfThread* rg_prof_register_thread(RgProf* prof, const char* name)
 	thread->capacity = prof->events_per_thread;
 	thread->id = index;
 
+	// Each buffer starts on its own cache line so adjacent threads never share
+	// the line holding their first and last events.
 	size_t arena_mark = prof->arena->used;
 	thread->events = (RgProfEvent*)rg_arena_alloc_array(
-	    prof->arena, sizeof(RgProfEvent), thread->capacity, RG_ALIGNOF(RgProfEvent));
+	    prof->arena, sizeof(RgProfEvent), thread->capacity, RG_CACHE_LINE_SIZE);
 	if (thread->events == NULL)
 	{
 		prof->arena->used = arena_mark;
@@ -353,7 +437,10 @@ RGINLINE void rg_prof_thread_reset(RgProfThread* thread)
 	thread->frame_open = 0u;
 }
 
-RGINLINE RgProfEvent* rg_prof_thread_push_event(RgProfThread* thread)
+// Reserve the next event slot without publishing it. Fill the event, then
+// call rg_prof_thread_publish_event so a concurrent reader never sees a
+// published count ahead of the event contents.
+RGINLINE RgProfEvent* rg_prof_thread_reserve_event(RgProfThread* thread)
 {
 	u32 index = thread->count;
 	if (RG_UNLIKELY(index >= thread->capacity))
@@ -361,50 +448,53 @@ RGINLINE RgProfEvent* rg_prof_thread_push_event(RgProfThread* thread)
 		thread->dropped++;
 		return NULL;
 	}
-	thread->count = index + 1u;
 	return &thread->events[index];
+}
+
+RGINLINE void rg_prof_thread_publish_event(RgProfThread* thread)
+{
+	rg_prof_store_release_u32(&thread->count, thread->count + 1u);
 }
 
 RGINLINE int rg_prof_emit_event_on(RgProfThread* thread, const char* name, RgProfEventType type)
 {
 	if (thread == NULL) return 0;
 
-	RgProfEvent* event = rg_prof_thread_push_event(thread);
-	if (event == NULL) return 0;
+	RgProfEvent* event = rg_prof_thread_reserve_event(thread);
+	if (RG_UNLIKELY(event == NULL)) return 0;
 
 	u64 now = rg_prof_ticks_now(thread->prof);
 	event->name = name;
 	event->start = now;
 	event->end = now;
 	event->thread_id = thread->id;
-	event->depth = thread->depth;
+	event->depth = (u16)thread->depth;
 	event->type = (u8)type;
 	event->reserved = 0u;
+	rg_prof_thread_publish_event(thread);
 	return 1;
 }
 
 RGINLINE RgProfScope rg_prof_scope_begin_on(RgProfThread* thread, const char* name)
 {
-	RgProfScope scope = {thread, NULL, 1, 0};
-	if (thread == NULL) return scope;
+	RgProfScope scope = {thread, NULL, 1};
+	if (RG_UNLIKELY(thread == NULL)) return scope;
 
-	RgProfEvent* event = rg_prof_thread_push_event(thread);
-	if (event == NULL) return scope;
+	RgProfEvent* event = rg_prof_thread_reserve_event(thread);
+	if (RG_UNLIKELY(event == NULL)) return scope;
 
+	u32 depth = thread->depth;
+	u64 now = rg_prof_ticks_now(thread->prof);
 	event->name = name;
-	event->start = rg_prof_ticks_now(thread->prof);
-	event->end = event->start;
+	event->start = now;
+	event->end = now;
 	event->thread_id = thread->id;
-	event->depth = thread->depth;
+	event->depth = (u16)depth;
 	event->type = (u8)RG_PROF_EVENT_SCOPE;
 	event->reserved = 0u;
+	rg_prof_thread_publish_event(thread);
+	thread->depth = depth + 1u;
 	scope.event = event;
-
-	if (thread->depth < UINT16_MAX)
-	{
-		thread->depth++;
-		scope.depth_incremented = 1;
-	}
 	return scope;
 }
 
@@ -416,9 +506,15 @@ RGINLINE RgProfScope rg_prof_scope_begin(const char* name)
 RGINLINE void rg_prof_scope_end(RgProfScope* scope)
 {
 	if (scope == NULL || !scope->active) return;
-	if (scope->event != NULL) scope->event->end = rg_prof_ticks_now(scope->thread->prof);
-	if (scope->depth_incremented && scope->thread->depth > 0u) scope->thread->depth--;
 	scope->active = 0;
+	RgProfEvent* event = scope->event;
+	if (RG_UNLIKELY(event == NULL)) return;
+	// Depth was incremented when this event was recorded, so a zero here means
+	// the thread was reset while the scope was open; that violates the
+	// "reset only while idle" contract.
+	RG_PROF_ASSERT(scope->thread->depth > 0u);
+	event->end = rg_prof_ticks_now(scope->thread->prof);
+	scope->thread->depth--;
 }
 
 RGINLINE void rg_prof_event_on(RgProfThread* thread, const char* name)
@@ -434,7 +530,7 @@ RGINLINE void rg_prof_event(const char* name)
 RGINLINE void rg_prof_frame_begin_on(RgProfThread* thread, const char* name)
 {
 	if (thread == NULL) return;
-	thread->frame_open = (u8)rg_prof_emit_event_on(thread, name, RG_PROF_EVENT_FRAME_BEGIN);
+	thread->frame_open = (u32)rg_prof_emit_event_on(thread, name, RG_PROF_EVENT_FRAME_BEGIN);
 }
 
 RGINLINE void rg_prof_frame_begin(const char* name)
@@ -461,7 +557,8 @@ RGINLINE void rg_prof_iterate_events(const RgProf* prof, RgProfEventFn fn, void*
 	for (u32 i = 0; i < prof->thread_count; i++)
 	{
 		const RgProfThread* thread = &prof->thread_slots[i].thread;
-		for (u32 j = 0; j < thread->count; j++) fn(&thread->events[j], user);
+		u32 count = rg_prof_load_acquire_u32(&thread->count);
+		for (u32 j = 0; j < count; j++) fn(&thread->events[j], user);
 	}
 }
 
@@ -515,14 +612,19 @@ RGINLINE int rg_prof_names_match(const char* a, const char* b)
 RGINLINE int rg_prof_history_capture(RgProfHistory* history, const RgProfThread* thread)
 {
 	if (history == NULL || history->frames == NULL || history->capacity == 0u ||
-	    thread == NULL || thread->prof == NULL || thread->events == NULL || thread->count < 2u ||
-	    thread->completed_frames == 0u ||
+	    thread == NULL || thread->prof == NULL || thread->events == NULL)
+	{
+		return 0;
+	}
+
+	u32 count = rg_prof_load_acquire_u32(&thread->count);
+	if (count < 2u || thread->completed_frames == 0u ||
 	    (history->source_thread == thread && history->last_completed_frame == thread->completed_frames))
 	{
 		return 0;
 	}
 
-	u32 end_index = thread->count;
+	u32 end_index = count;
 	while (end_index > 0u)
 	{
 		end_index--;

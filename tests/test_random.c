@@ -368,6 +368,94 @@ static void test_shuffle_sequence_compatibility(void)
 	}
 }
 
+// Golden shuffles recorded from the eager-threshold implementation for each
+// swap width the fixed-size swap paths handle (4, 8, 16, 32 bytes) and for an
+// odd stride that takes the generic path. Any change in draws, rejection
+// decisions, or element movement changes these outputs.
+static void test_shuffle_golden_strides(void)
+{
+	static const u64 expected_u64[12] = {3, 4, 9, 5, 7, 2, 10, 6, 1, 11, 8, 0};
+	static const u64 expected_state_u64[4] = {
+		UINT64_C(0xfa163ef40daaa0c6), UINT64_C(0xde4ede2018cd2ea4),
+		UINT64_C(0x719d2468814f5101), UINT64_C(0x9467a2b9ee78af30),
+	};
+	static const u64 expected_16[9] = {1, 7, 0, 3, 4, 8, 5, 2, 6};
+	static const u64 expected_32[7] = {4, 0, 6, 5, 1, 3, 2};
+	static const u8 expected_7[11] = {
+		0x80, 0x00, 0x10, 0x70, 0x20, 0x40, 0xa0, 0x90, 0x50, 0x60, 0x30,
+	};
+	static const u32 expected_u32_head[8] = {247, 750, 500, 797, 89, 607, 884, 632};
+	static const u32 expected_u32_tail[4] = {107, 685, 311, 716};
+	static const u64 expected_state_u32[4] = {
+		UINT64_C(0x051dc5e309d7a0da), UINT64_C(0x70a1faaedb4afd56),
+		UINT64_C(0x4d8b1b93dd94ef80), UINT64_C(0x08f7769b22827c03),
+	};
+	static u32 values_u32[1000];
+	u64 values_u64[12];
+	u64 values_16[9][2];
+	u64 values_32[7][4];
+	u8 values_7[11 * 7];
+	RgRng rng;
+
+	for (size_t i = 0; i < RG_ARRAY_COUNT(values_u64); i++)
+		values_u64[i] = (u64)i;
+	rg_rng_seed(&rng, 2024);
+	rg_random_shuffle(values_u64, RG_ARRAY_COUNT(values_u64), sizeof(values_u64[0]), &rng);
+	CHECK(memcmp(values_u64, expected_u64, sizeof(values_u64)) == 0);
+	CHECK(memcmp(rng.state, expected_state_u64, sizeof(rng.state)) == 0);
+
+	for (size_t i = 0; i < RG_ARRAY_COUNT(values_16); i++)
+	{
+		values_16[i][0] = (u64)i;
+		values_16[i][1] = (u64)(100 + i);
+	}
+	rg_rng_seed(&rng, 7);
+	rg_random_shuffle(values_16, RG_ARRAY_COUNT(values_16), sizeof(values_16[0]), &rng);
+	for (size_t i = 0; i < RG_ARRAY_COUNT(values_16); i++)
+	{
+		CHECK(values_16[i][0] == expected_16[i]);
+		CHECK(values_16[i][1] == expected_16[i] + 100);
+	}
+
+	for (size_t i = 0; i < RG_ARRAY_COUNT(values_32); i++)
+	{
+		values_32[i][0] = (u64)i;
+		values_32[i][1] = values_32[i][2] = values_32[i][3] = (u64)(10 * i);
+	}
+	rg_rng_seed(&rng, 99);
+	rg_random_shuffle(values_32, RG_ARRAY_COUNT(values_32), sizeof(values_32[0]), &rng);
+	for (size_t i = 0; i < RG_ARRAY_COUNT(values_32); i++)
+	{
+		CHECK(values_32[i][0] == expected_32[i]);
+		CHECK(values_32[i][1] == expected_32[i] * 10);
+		CHECK(values_32[i][3] == expected_32[i] * 10);
+	}
+
+	for (size_t i = 0; i < 11; i++)
+		for (size_t k = 0; k < 7; k++)
+			values_7[i * 7 + k] = (u8)(i * 16 + k);
+	rg_rng_seed(&rng, 5);
+	rg_random_shuffle(values_7, 11, 7, &rng);
+	for (size_t i = 0; i < 11; i++)
+		for (size_t k = 0; k < 7; k++)
+			CHECK(values_7[i * 7 + k] == (u8)(expected_7[i] + k));
+
+	for (size_t i = 0; i < RG_ARRAY_COUNT(values_u32); i++)
+		values_u32[i] = (u32)i;
+	rg_rng_seed(&rng, 31337);
+	rg_random_shuffle(values_u32, RG_ARRAY_COUNT(values_u32), sizeof(values_u32[0]), &rng);
+	CHECK(memcmp(values_u32, expected_u32_head, sizeof(expected_u32_head)) == 0);
+	CHECK(memcmp(values_u32 + 996, expected_u32_tail, sizeof(expected_u32_tail)) == 0);
+	CHECK(memcmp(rng.state, expected_state_u32, sizeof(rng.state)) == 0);
+	u64 digest = UINT64_C(1469598103934665603);
+	for (size_t i = 0; i < RG_ARRAY_COUNT(values_u32); i++)
+	{
+		digest ^= values_u32[i];
+		digest *= UINT64_C(1099511628211);
+	}
+	CHECK(digest == UINT64_C(0x9f90c1c545bfb8c5));
+}
+
 static void test_boolean_helpers(void)
 {
 	RgRng rng;
@@ -439,6 +527,7 @@ int main(void)
 	test_uniform_ranges();
 	test_shuffle_and_fill();
 	test_shuffle_sequence_compatibility();
+	test_shuffle_golden_strides();
 	test_boolean_helpers();
 	test_distributions();
 

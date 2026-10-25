@@ -57,8 +57,18 @@ RG_PROF_FRAME_END("Frame");
 
 Each OS thread calls `rg_prof_set_thread` once with its own registered handle.
 After that, recording writes only that thread's state and event buffer; there
-are no locks or atomics on the hot path. Thread states occupy separate cache
-lines so workers do not bounce their event counters through the same line.
+are no locks on the hot path, and the only atomic is a release store of the
+event count, which is a plain move on x86. Thread states occupy separate cache
+lines, and each event buffer starts on its own cache line, so workers do not
+bounce their counters or boundary events through a shared line.
+
+The thread handle lives in a `static` thread-local variable, which has internal
+linkage like every other symbol in the header. In a unity build there is one
+such variable per OS thread. In a build with separately compiled translation
+units, each unit has its own, and a unit that records without having called
+`rg_prof_set_thread` on that thread sees a null handle and silently records
+nothing. Either set the thread in every recording unit or use the `_ON` forms
+with an explicitly passed handle.
 
 The `_ON` forms take a thread handle directly and avoid the TLS lookup:
 
@@ -95,6 +105,21 @@ incremented.
 `rg_prof_iterate_events` visits registered threads in registration order and
 events in recording order. The caller is responsible for synchronizing reset
 and consumption with the producing threads.
+
+Reading a thread's buffer while that thread is still recording is a documented
+misuse, but it should not be undefined behavior. A recording thread fills an
+event and then publishes it with a release store of `count`;
+`rg_prof_iterate_events` and `rg_prof_history_capture` read `count` with an
+acquire load, so any event they visit is complete except for the `end` time of
+a scope that is still open. Both operations compile to ordinary moves on x86
+and to cheap barriers on ARM64. `RG_PROF_ATOMICS 0` replaces them with plain
+accesses for toolchains without GCC/Clang builtins, MSVC intrinsics, or C11
+`<stdatomic.h>`.
+
+Scope depth is tracked in a `u32` and stored in the 16-bit event field. The
+release build no longer saturates at 65,535 nested scopes; a `RG_PROF_ASSERT`
+in `rg_prof_scope_end` catches the one real failure mode, resetting a thread
+while a scope on it is still open.
 
 ## Optional frame history
 
@@ -140,7 +165,13 @@ build configurations.
 
 `RgProfEvent` occupies 32 bytes on x64, with frame numbering stored in the
 optional history. A default registered thread uses 512 KiB for events. Thread
-state is cache-line isolated, and event storage is pre-touched during registration.
+state is cache-line isolated, event storage is cache-line aligned and
+pre-touched during registration, and tick-to-time conversions multiply by a
+reciprocal cached at `rg_prof_init`.
+
+On x86-64 the timer is `rdtsc` whenever `rg_time` selects its TSC backend (see
+[rg_time](rg_time.md)); a profiler scope is two timer reads and little else, so
+this roughly halves scope overhead relative to the OS clock.
 
 Seven fresh-process runs of the optimized MSVC x64 benchmark produced
 these historical representative medians:

@@ -134,8 +134,15 @@ Define options before including the header:
 ```c
 #define RG_INPUT_TEXT_BUFFER_SIZE 64
 #define RG_INPUT_ASSERT(condition) my_assert(condition)
+#define RG_INPUT_NO_SIMD // copy key state without SSE2
 #include "rg_input.h"
 ```
+
+`rg_input_begin_frame` and `rg_input_sample` each copy the 512-entry key-state
+array. SDL's array is only 2-byte aligned and compilers lower a `memcpy` of it
+to a misaligned `rep movs`, so the header copies with an explicit 16-byte SSE2
+loop where SSE2 is available (always on x86-64) and an 8-byte loop otherwise.
+`RG_INPUT_NO_SIMD` selects the portable loop on x86 as well.
 
 `RgInputState`, queue storage, and queued text are caller-owned. Keep them alive
 while processing and consuming a frame. The header has normal include guards

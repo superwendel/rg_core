@@ -63,12 +63,60 @@ static void test_monotonic_clock(void)
 	rg_time_yield();
 }
 
+// Many back-to-back samples, with yields to invite migration between cores,
+// must never step backwards. This matters most for the rdtsc backend, which
+// relies on the invariant TSC being synchronized across cores.
+static void test_monotonic_many_samples(void)
+{
+	u64 previous = rg_time_ticks();
+	int backwards = 0;
+	for (u32 i = 0; i < 2000000u; i++)
+	{
+		u64 now = rg_time_ticks();
+		if (now < previous) backwards++;
+		previous = now;
+		if ((i & 0x3ffffu) == 0u) rg_time_yield();
+	}
+	CHECK(backwards == 0);
+}
+
+// The tick clock must agree with the OS clock about a 50 ms sleep. With the
+// rdtsc backend this validates the calibrated frequency; with the OS backend
+// both sides read the same clock.
+static void test_elapsed_matches_os_clock(void)
+{
+#if !RG_TIME_CUSTOM
+	u64 os_frequency = rg_time_os_frequency();
+	CHECK(os_frequency > 0u);
+	if (os_frequency == 0u) return;
+
+	u64 os_start = rg_time_os_ticks();
+	u64 tick_start = rg_time_ticks();
+	rg_time_sleep_ms(50u);
+	u64 tick_end = rg_time_ticks();
+	u64 os_end = rg_time_os_ticks();
+
+	f64 os_seconds = (f64)(os_end - os_start) / (f64)os_frequency;
+	f64 tick_seconds = rg_time_ticks_to_seconds(tick_end - tick_start);
+	CHECK(os_seconds >= 0.05);
+	CHECK(tick_seconds >= 0.05);
+	// The OS samples bracket the tick samples, so the OS span is slightly
+	// longer. Allow 2% for that and for calibration error.
+	CHECK(nearly_equal(tick_seconds, os_seconds, os_seconds * 0.02));
+	printf("rg_time: backend=%s frequency=%llu Hz sleep(50ms) ticks=%.6fs os=%.6fs\n",
+	       rg_time_using_tsc() ? "tsc" : "os", (unsigned long long)rg_time_ticks_per_second(),
+	       tick_seconds, os_seconds);
+#endif
+}
+
 int main(void)
 {
 	rg_time_init();
 	rg_time_init();
 	test_frequency_and_conversions();
 	test_monotonic_clock();
+	test_monotonic_many_samples();
+	test_elapsed_matches_os_clock();
 	printf("rg_time: %d checks, %d failures\n", tests_run, tests_failed);
 	return tests_failed == 0 ? 0 : 1;
 }

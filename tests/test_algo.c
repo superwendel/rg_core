@@ -123,8 +123,56 @@ static int qsort_u64_cmp(const void* a, const void* b)
 	return (ia > ib) - (ia < ib);
 }
 
+typedef struct Bytes3
+{
+	u8 bytes[3];
+} Bytes3;
+
+typedef struct Record32
+{
+	u32 key;
+	u32 id;
+	u32 payload[6];
+} Record32;
+
+typedef struct Record64
+{
+	u64 key;
+	u32 id;
+	u32 payload[13];
+} Record64;
+
+static int u8_less(const u8* a, const u8* b)
+{
+	return *a < *b;
+}
+
+static u32 bytes3_key(const Bytes3* value)
+{
+	return ((u32)value->bytes[0] << 16u) | ((u32)value->bytes[1] << 8u) | (u32)value->bytes[2];
+}
+
+static int bytes3_less(const Bytes3* a, const Bytes3* b)
+{
+	return bytes3_key(a) < bytes3_key(b);
+}
+
+static int record32_less(const Record32* a, const Record32* b)
+{
+	return a->key < b->key;
+}
+
+static int record64_less(const Record64* a, const Record64* b)
+{
+	return a->key < b->key;
+}
+
 RG_ALGO_DEFINE(int, IntAlgo, int_less);
 RG_ALGO_DEFINE(int, CountedIntAlgo, counted_int_less);
+RG_ALGO_DEFINE(u8, U8Algo, u8_less);
+RG_ALGO_DEFINE(Bytes3, Bytes3Algo, bytes3_less);
+RG_ALGO_DEFINE(Record32, Record32Algo, record32_less);
+RG_ALGO_DEFINE(Record64, Record64Algo, record64_less);
 RG_ALGO_DEFINE(Item, ItemAlgo, item_less);
 #define RG_ALGO_I32_KEY(ptr) ((u32)(*(const i32*)(ptr)) ^ 0x80000000u)
 RG_ALGO_DEFINE(i32, I32Algo, i32_less);
@@ -254,6 +302,209 @@ static void test_sort_nth_small(void)
 
 	TEST_PASS();
 	printf("  PASS: small sort/nth guardrails\n");
+}
+
+// Fills data with one of several partition-stressing patterns: a few distinct
+// values (exercises the equal-element partition), organ pipe, sawtooth, random,
+// a few outliers in a run of equal values, and nearly sorted data.
+static void fill_pattern(int* data, size_t count, size_t pattern, u32* state)
+{
+	for (size_t i = 0; i < count; i++)
+	{
+		switch (pattern)
+		{
+		case 0u:
+			data[i] = (int)(rng_next(state) % 2u);
+			break;
+		case 1u:
+			data[i] = (int)(rng_next(state) % 3u) - 1;
+			break;
+		case 2u:
+			data[i] = (int)(rng_next(state) % 5u) * 7;
+			break;
+		case 3u:
+			data[i] = (int)(i < count / 2u ? i : count - 1u - i);
+			break;
+		case 4u:
+			data[i] = (int)(i % 17u);
+			break;
+		case 5u:
+			data[i] = (int)rng_next(state);
+			break;
+		case 6u:
+			data[i] = (i % 97u == 0u) ? (int)(rng_next(state) % 1000u) - 500 : 42;
+			break;
+		case 7u:
+			data[i] = (int)(count - i);
+			break;
+		default:
+			data[i] = (int)i;
+			break;
+		}
+	}
+	if (pattern == 8u && count > 1u)
+	{
+		size_t swaps = count / 50u + 1u;
+		for (size_t s = 0; s < swaps; s++)
+		{
+			size_t a = rng_next(state) % count;
+			size_t b = rng_next(state) % count;
+			int tmp = data[a];
+			data[a] = data[b];
+			data[b] = tmp;
+		}
+	}
+}
+
+static void test_sort_partition_patterns(void)
+{
+	enum { MAX_COUNT = 5000, PATTERN_COUNT = 9 };
+	static const size_t sizes[] = {RG_ALGO_INSERTION_CUTOFF + 1u, RG_ALGO_BLOCK - 1u, RG_ALGO_BLOCK,
+								   RG_ALGO_BLOCK + 1u, 127, 128, 129, 2u * RG_ALGO_BLOCK,
+								   2u * RG_ALGO_BLOCK + 1u, 255, 256, 257, 1023, MAX_COUNT};
+	static int data[MAX_COUNT];
+	static int ref[MAX_COUNT];
+	u32 state = 0x2545f491u;
+
+	for (size_t size_idx = 0; size_idx < RG_ARRAY_COUNT(sizes); size_idx++)
+	{
+		size_t count = sizes[size_idx];
+		if (count > MAX_COUNT) continue; // a large configured RG_ALGO_INSERTION_CUTOFF exceeds the buffers
+		for (size_t pattern = 0; pattern < PATTERN_COUNT; pattern++)
+		{
+			fill_pattern(data, count, pattern, &state);
+			memcpy(ref, data, count * sizeof(int));
+			qsort(ref, count, sizeof(int), qsort_int_cmp);
+			rg_algo_sort_IntAlgo(data, count);
+			TEST_ASSERT(memcmp(data, ref, count * sizeof(int)) == 0, "pattern sort matches qsort");
+		}
+	}
+
+	TEST_PASS();
+	printf("  PASS: partition patterns/boundaries\n");
+}
+
+static void test_nth_element_patterns(void)
+{
+	enum { MAX_COUNT = 1025, PATTERN_COUNT = 9 };
+	static const size_t sizes[] = {RG_ALGO_INSERTION_CUTOFF + 1u, RG_ALGO_BLOCK, RG_ALGO_BLOCK + 1u,
+								   127, 128, 129, 300, MAX_COUNT};
+	static int original[MAX_COUNT];
+	static int data[MAX_COUNT];
+	static int ref[MAX_COUNT];
+	u32 state = 0x9e3779b9u;
+
+	for (size_t size_idx = 0; size_idx < RG_ARRAY_COUNT(sizes); size_idx++)
+	{
+		size_t count = sizes[size_idx];
+		size_t picks[6];
+		if (count < 2u || count > MAX_COUNT) continue; // configurable RG_ALGO_BLOCK / RG_ALGO_INSERTION_CUTOFF may fall outside the buffers
+		picks[0] = 0u;
+		picks[1] = 1u;
+		picks[2] = count / 4u;
+		picks[3] = count / 2u;
+		picks[4] = count - 2u;
+		picks[5] = count - 1u;
+		for (size_t pattern = 0; pattern < PATTERN_COUNT; pattern++)
+		{
+			fill_pattern(original, count, pattern, &state);
+			memcpy(ref, original, count * sizeof(int));
+			qsort(ref, count, sizeof(int), qsort_int_cmp);
+			for (size_t pick = 0; pick < RG_ARRAY_COUNT(picks); pick++)
+			{
+				size_t nth = picks[pick];
+				memcpy(data, original, count * sizeof(int));
+				rg_algo_nth_element_IntAlgo(data, count, nth);
+				TEST_ASSERT(data[nth] == ref[nth], "pattern nth value");
+				for (size_t i = 0; i < nth; i++)
+				{
+					TEST_ASSERT(!int_less(&data[nth], &data[i]), "pattern nth left partition");
+				}
+				for (size_t i = nth + 1u; i < count; i++)
+				{
+					TEST_ASSERT(!int_less(&data[i], &data[nth]), "pattern nth right partition");
+				}
+				qsort(data, count, sizeof(int), qsort_int_cmp);
+				TEST_ASSERT(memcmp(data, ref, count * sizeof(int)) == 0, "pattern nth preserves multiset");
+			}
+		}
+	}
+
+	TEST_PASS();
+	printf("  PASS: nth_element duplicates/ends\n");
+}
+
+static void test_sort_element_sizes(void)
+{
+	enum { COUNT = 1000 };
+	static u8 bytes[COUNT];
+	static u8 bytes_ref[COUNT];
+	static Bytes3 triples[COUNT];
+	static u32 triple_keys[COUNT];
+	static Record32 records32[COUNT];
+	static Record64 records64[COUNT];
+	static u32 keys32[COUNT];
+	static u64 keys64[COUNT];
+	u32 state = 0x6c078965u;
+
+	for (size_t i = 0; i < COUNT; i++)
+	{
+		u32 r = rng_next(&state);
+		bytes[i] = (u8)(r & 0x0fu);
+		bytes_ref[i] = bytes[i];
+		triples[i].bytes[0] = (u8)(r >> 24u) & 1u;
+		triples[i].bytes[1] = (u8)(r >> 8u);
+		triples[i].bytes[2] = (u8)r;
+		triple_keys[i] = bytes3_key(&triples[i]);
+		records32[i].key = r % 100u;
+		records32[i].id = (u32)i;
+		keys32[i] = records32[i].key;
+		records64[i].key = rng_next_u64(&state) >> (i % 3u == 0u ? 60u : 0u);
+		records64[i].id = (u32)i;
+		keys64[i] = records64[i].key;
+		for (size_t k = 0; k < RG_ARRAY_COUNT(records32[i].payload); k++)
+		{
+			records32[i].payload[k] = (u32)i * (u32)(k + 1u);
+		}
+		for (size_t k = 0; k < RG_ARRAY_COUNT(records64[i].payload); k++)
+		{
+			records64[i].payload[k] = (u32)i ^ (u32)(k * 0x9e3779b9u);
+		}
+	}
+
+	rg_algo_sort_U8Algo(bytes, COUNT);
+	rg_algo_sort_Bytes3Algo(triples, COUNT);
+	rg_algo_sort_Record32Algo(records32, COUNT);
+	rg_algo_sort_Record64Algo(records64, COUNT);
+	TEST_ASSERT(rg_algo_is_sorted_U8Algo(bytes, COUNT), "1-byte elements sorted");
+	TEST_ASSERT(rg_algo_is_sorted_Bytes3Algo(triples, COUNT), "3-byte elements sorted");
+	TEST_ASSERT(rg_algo_is_sorted_Record32Algo(records32, COUNT), "32-byte elements sorted");
+	TEST_ASSERT(rg_algo_is_sorted_Record64Algo(records64, COUNT), "64-byte elements sorted");
+
+	for (size_t i = 0; i < COUNT; i++)
+	{
+		size_t found = 0u;
+		for (size_t j = 0; j < COUNT; j++)
+		{
+			found += (bytes_ref[j] == bytes[i]);
+			found += (triple_keys[j] == bytes3_key(&triples[i])) << 8u;
+		}
+		TEST_ASSERT((found & 0xffu) > 0u, "1-byte multiset preserved");
+		TEST_ASSERT((found >> 8u) > 0u, "3-byte multiset preserved");
+		TEST_ASSERT(keys32[records32[i].id] == records32[i].key, "32-byte key travels with id");
+		TEST_ASSERT(keys64[records64[i].id] == records64[i].key, "64-byte key travels with id");
+		for (size_t k = 0; k < RG_ARRAY_COUNT(records32[i].payload); k++)
+		{
+			TEST_ASSERT(records32[i].payload[k] == records32[i].id * (u32)(k + 1u), "32-byte payload intact");
+		}
+		for (size_t k = 0; k < RG_ARRAY_COUNT(records64[i].payload); k++)
+		{
+			TEST_ASSERT(records64[i].payload[k] == (records64[i].id ^ (u32)(k * 0x9e3779b9u)), "64-byte payload intact");
+		}
+	}
+
+	TEST_PASS();
+	printf("  PASS: element sizes 1/3/32/64\n");
 }
 
 static void test_stable_sort(void)
@@ -599,6 +850,9 @@ static void run_tests(void)
 	test_sort_basic();
 	test_sort_monotonic_fast_paths();
 	test_sort_nth_small();
+	test_sort_partition_patterns();
+	test_nth_element_patterns();
+	test_sort_element_sizes();
 	test_stable_sort();
 	test_stable_sort_patterns();
 	test_nth_element();

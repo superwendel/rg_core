@@ -81,7 +81,9 @@ static int rg_log_initialized;
 #define RG_LOG_LEVEL_INFO_INIT(level_name, level_color, level_stream) \
 	(RgLogLevelInfo) { level_name, level_color, level_stream }
 
-RGINLINE void rg_log_init_defaults(void)
+// Kept out of line: the level table is only needed once a message is written,
+// so the per-call-site level check must not drag its initializer along.
+static RG_NOINLINE void rg_log_init_defaults(void)
 {
 	if (rg_log_initialized)
 		return;
@@ -137,6 +139,41 @@ RGINLINE char* rg_log_puts(char* buf, char* end, const char* string)
 	return buf;
 }
 
+#if defined(RG_LOG_TIMESTAMP)
+// Formatting the local time costs about a microsecond, so each thread caches
+// the text for the current second. Thread-local storage keeps the cache free
+// of shared mutable state.
+static RG_THREAD_LOCAL time_t rg_log_timestamp_second = (time_t)-1;
+static RG_THREAD_LOCAL char rg_log_timestamp_text[9] = "00:00:00";
+
+RGINLINE const char* rg_log_timestamp(void)
+{
+	time_t now = time(NULL);
+	if (now == rg_log_timestamp_second)
+		return rg_log_timestamp_text;
+
+	struct tm* time_info;
+#if RG_COMPILER_MSVC
+	struct tm time_storage;
+	time_info = localtime_s(&time_storage, &now) == 0 ? &time_storage : NULL;
+#elif defined(_POSIX_C_SOURCE) || defined(_POSIX_SOURCE) || defined(_XOPEN_SOURCE) || \
+    defined(_DEFAULT_SOURCE) || defined(_GNU_SOURCE) || defined(_BSD_SOURCE) || RG_PLATFORM_MACOS
+	struct tm time_storage;
+	time_info = localtime_r(&now, &time_storage);
+#else
+	// Strict ISO C without a reentrant localtime; shares libc's static buffer.
+	time_info = localtime(&now);
+#endif
+	if (time_info == NULL ||
+	    strftime(rg_log_timestamp_text, sizeof(rg_log_timestamp_text), "%H:%M:%S", time_info) == 0)
+	{
+		memcpy(rg_log_timestamp_text, "00:00:00", sizeof(rg_log_timestamp_text));
+	}
+	rg_log_timestamp_second = now;
+	return rg_log_timestamp_text;
+}
+#endif
+
 RGINLINE char* rg_log_itoa(char* buf, char* end, int value)
 {
 	if (value < 0)
@@ -174,15 +211,9 @@ RGINLINE char* rg_log_build_prefix(char* buffer, size_t buffer_size, RgLogLevel 
 	char* end = buffer + buffer_size - 2;
 
 #if defined(RG_LOG_TIMESTAMP)
-	time_t timer;
-	char time_buffer[9] = "00:00:00";
-	time(&timer);
-	struct tm* time_info = localtime(&timer);
-	if (time_info != NULL)
-		strftime(time_buffer, sizeof(time_buffer), "%H:%M:%S", time_info);
 	cursor = rg_log_puts(cursor, end, RG_LOG_ANSI_GRAY);
 	cursor = rg_log_putc(cursor, end, '[');
-	cursor = rg_log_puts(cursor, end, time_buffer);
+	cursor = rg_log_puts(cursor, end, rg_log_timestamp());
 	cursor = rg_log_putc(cursor, end, ']');
 	cursor = rg_log_putc(cursor, end, ' ');
 #endif
@@ -254,11 +285,13 @@ static void rg_log(RgLogLevel level, const char* file, int line, const char* for
 }
 
 // The macro-level check prevents formatting arguments from being evaluated
-// when a message is filtered out.
+// when a message is filtered out. It compares against the level variable
+// directly; rg_log initializes the level table before using it, so the lazy
+// initialization stays off the call site.
 #define RG_LOG_INTERNAL_WRITE(level, ...)                     \
 	do                                                         \
 	{                                                          \
-		if ((level) >= rg_log_get_level())                       \
+		if (RG_UNLIKELY((level) >= rg_log_level))                \
 			rg_log((level), __FILE__, __LINE__, __VA_ARGS__);     \
 	} while (0)
 

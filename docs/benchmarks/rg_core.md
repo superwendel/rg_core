@@ -28,6 +28,12 @@ Each row sorts 1,048,576 values.
 | 32-byte records, 16-bit keys | 77.42 ms | **21.05 ms** | 81.67 ms | 213.34 ms | n/a | n/a |
 | 32-byte records, 64-bit keys | **81.84 ms** | 115.80 ms | 94.21 ms | 273.88 ms | n/a | n/a |
 
+These are the figures from before the October 2026 block-partition rewrite of the
+comparison sort; the current Linux before/after numbers are in the
+[benchmark README](README.md#linux-beforeafter-october-2026), where the
+comparison sort finishes random `int32` input in about half the time of
+`std::sort` and the 64-bit-key record case now beats the radix path.
+
 For random integers, the comparison-to-radix elapsed-time ratios were 5.8x for
 `std::sort` and 9.2x for `qsort`; the radix path used 17% and 11% of their
 elapsed time, respectively. For the 16-bit record workload, the

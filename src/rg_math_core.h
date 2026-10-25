@@ -135,15 +135,22 @@
 #endif
 #endif
 
+// Reciprocal square root estimate used by rg_rsqrtf, rg_rsqrtf_fast and the
+// SIMD normalize paths:
+//   RSQRT     - hardware rsqrt estimate refined by one Newton-Raphson step
+//               (~2.4e-7 relative error, default)
+//   SQRT_RCP  - rcp(sqrt(x)) (~3e-4 relative error)
+//   RSQRT_RAW - unrefined hardware rsqrt estimate (~2.9e-4 relative error)
 #define RG_MATH_RSQRT_MODE_RSQRT 0
 #define RG_MATH_RSQRT_MODE_SQRT_RCP 1
+#define RG_MATH_RSQRT_MODE_RSQRT_RAW 2
 
 #ifndef RG_MATH_RSQRT_MODE
 #define RG_MATH_RSQRT_MODE RG_MATH_RSQRT_MODE_RSQRT
 #endif
 
-#if RG_MATH_RSQRT_MODE != RG_MATH_RSQRT_MODE_RSQRT && RG_MATH_RSQRT_MODE != RG_MATH_RSQRT_MODE_SQRT_RCP
-#error RG_MATH_RSQRT_MODE must be RG_MATH_RSQRT_MODE_RSQRT or RG_MATH_RSQRT_MODE_SQRT_RCP
+#if RG_MATH_RSQRT_MODE != RG_MATH_RSQRT_MODE_RSQRT && RG_MATH_RSQRT_MODE != RG_MATH_RSQRT_MODE_SQRT_RCP && RG_MATH_RSQRT_MODE != RG_MATH_RSQRT_MODE_RSQRT_RAW
+#error RG_MATH_RSQRT_MODE must be RG_MATH_RSQRT_MODE_RSQRT, RG_MATH_RSQRT_MODE_SQRT_RCP or RG_MATH_RSQRT_MODE_RSQRT_RAW
 #endif
 
 // Clip-space / handedness control (matches cglm defaults)

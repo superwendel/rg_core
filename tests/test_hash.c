@@ -34,6 +34,14 @@ RGINLINE uint64_t test_identity_hash(uint32_t key)
 	return key;
 }
 
+static int test_hash_calls;
+
+RGINLINE uint64_t test_counting_hash(uint32_t key)
+{
+	test_hash_calls++;
+	return rg_hash_u32(key);
+}
+
 RG_HASH_MAP_DEFINE(uint32_t, uint32_t, U32Map, rg_hash_u32, rg_hash_eq_u32);
 RG_HASH_MAP_DEFINE(const char*, uint32_t, StrMap, rg_hash_str, rg_hash_eq_str);
 RG_HASH_MAP_DEFINE(uint32_t, uint32_t, CollisionMap, test_zero_hash, rg_hash_eq_u32);
@@ -43,6 +51,8 @@ RG_HASH_MAP_DEFINE(uint32_t, uint32_t, ProbeMap, test_identity_hash, rg_hash_eq_
 RG_HASH_SET_DEFINE(uint32_t, ProbeSet, test_identity_hash, rg_hash_eq_u32);
 RG_HASH_MAP_DEFINE(uint32_t, uint32_t, FastMap, rg_hash_u32_fast, rg_hash_eq_u32);
 RG_HASH_SET_DEFINE(uint64_t, FastSet, rg_hash_u64_fast, rg_hash_eq_u64);
+RG_HASH_MAP_DEFINE(uint32_t, uint32_t, CountMap, test_counting_hash, rg_hash_eq_u32);
+RG_HASH_SET_DEFINE(uint32_t, CountSet, test_counting_hash, rg_hash_eq_u32);
 
 static RgArena arena;
 
@@ -541,6 +551,70 @@ static void test_fast_hash_tables(void)
 	CHECK(rg_hash_set_count(&set) == expected_count);
 }
 
+// Every table operation hashes its key exactly once, including an insertion
+// that grows the table: rehashing reuses the stored hashes.
+static void test_single_hash_per_operation(void)
+{
+	rg_arena_reset(&arena);
+	CountMap map;
+	rg_hash_map_init(CountMap, &map, &arena);
+	CountSet set;
+	rg_hash_set_init(CountSet, &set, &arena);
+
+	test_hash_calls = 0;
+	CHECK(rg_hash_map_try_put(CountMap, &map, 1u, 10u) == 1);
+	CHECK(test_hash_calls == 1);
+	CHECK(rg_hash_map_try_put(CountMap, &map, 1u, 11u) == 0);
+	CHECK(test_hash_calls == 2);
+	CHECK(rg_hash_map_get_ptr(CountMap, &map, 1u) != NULL);
+	CHECK(test_hash_calls == 3);
+	CHECK(rg_hash_map_get_ptr(CountMap, &map, 2u) == NULL);
+	CHECK(test_hash_calls == 4);
+	CHECK(rg_hash_map_remove_CountMap(&map, 1u) == 1);
+	CHECK(test_hash_calls == 5);
+	CHECK(rg_hash_map_remove_CountMap(&map, 1u) == 0);
+	CHECK(test_hash_calls == 6);
+
+	test_hash_calls = 0;
+	size_t cap_before = rg_hash_map_capacity(&map);
+	uint32_t inserted = 0;
+	while (rg_hash_map_capacity(&map) == cap_before)
+	{
+		CHECK(rg_hash_map_try_put(CountMap, &map, 100u + inserted, inserted) == 1);
+		inserted++;
+	}
+	CHECK(inserted > 0);
+	CHECK(test_hash_calls == (int)inserted);
+	for (uint32_t i = 0; i < inserted; i++)
+	{
+		uint32_t* value = rg_hash_map_get_ptr(CountMap, &map, 100u + i);
+		CHECK(value != NULL && *value == i);
+	}
+
+	test_hash_calls = 0;
+	CHECK(rg_hash_set_try_insert(CountSet, &set, 1u) == 1);
+	CHECK(test_hash_calls == 1);
+	CHECK(rg_hash_set_try_insert(CountSet, &set, 1u) == 0);
+	CHECK(test_hash_calls == 2);
+	CHECK(rg_hash_set_contains(CountSet, &set, 1u));
+	CHECK(test_hash_calls == 3);
+	CHECK(rg_hash_set_remove_CountSet(&set, 1u) == 1);
+	CHECK(test_hash_calls == 4);
+
+	test_hash_calls = 0;
+	cap_before = rg_hash_set_capacity(&set);
+	inserted = 0;
+	while (rg_hash_set_capacity(&set) == cap_before)
+	{
+		CHECK(rg_hash_set_try_insert(CountSet, &set, 100u + inserted) == 1);
+		inserted++;
+	}
+	CHECK(inserted > 0);
+	CHECK(test_hash_calls == (int)inserted);
+	for (uint32_t i = 0; i < inserted; i++)
+		CHECK(rg_hash_set_contains(CountSet, &set, 100u + i));
+}
+
 static void test_allocation_failure(void)
 {
 	RgArena tiny = rg_arena_create(KB(1));
@@ -595,6 +669,7 @@ int main(void)
 	test_collision_probe_and_exhausted_update();
 	test_fast_hash_distribution();
 	test_fast_hash_tables();
+	test_single_hash_per_operation();
 	test_allocation_failure();
 
 	rg_arena_free(&arena);

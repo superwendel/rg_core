@@ -12,6 +12,38 @@
 
 RG_MATH_EXTERN_C_BEGIN
 
+#ifdef RG_MATH_SSE
+// Reciprocal square root estimates selected by RG_MATH_RSQRT_MODE (see rg_math_core.h).
+// rg_math_rsqrt_ss refines lane 0 only; upper lanes are unspecified.
+RGINLINE __m128 rg_math_rsqrt_ss(__m128 x)
+{
+#if RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_SQRT_RCP
+	return _mm_rcp_ss(_mm_sqrt_ss(x));
+#elif RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_RSQRT_RAW
+	return _mm_rsqrt_ss(x);
+#else
+	// r = r * (1.5 - 0.5 * (x * r * r)); x*r*r is evaluated first so no
+	// intermediate underflows when x is near FLT_MIN with flush-to-zero on.
+	__m128 r = _mm_rsqrt_ss(x);
+	__m128 xrr = _mm_mul_ss(_mm_mul_ss(x, r), r);
+	return _mm_mul_ss(r, _mm_sub_ss(_mm_set_ss(1.5f), _mm_mul_ss(_mm_set_ss(0.5f), xrr)));
+#endif
+}
+
+RGINLINE __m128 rg_math_rsqrt_ps(__m128 x)
+{
+#if RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_SQRT_RCP
+	return _mm_rcp_ps(_mm_sqrt_ps(x));
+#elif RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_RSQRT_RAW
+	return _mm_rsqrt_ps(x);
+#else
+	__m128 r = _mm_rsqrt_ps(x);
+	__m128 xrr = _mm_mul_ps(_mm_mul_ps(x, r), r);
+	return _mm_mul_ps(r, RG_MATH_FNMADD_PS(_mm_set1_ps(0.5f), xrr, _mm_set1_ps(1.5f)));
+#endif
+}
+#endif
+
 // =============================================================================
 // SCALAR MATH - PUBLIC API
 // =============================================================================
@@ -20,12 +52,7 @@ RG_MATH_EXTERN_C_BEGIN
 #if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
 RGINLINE f32 rg_rsqrtf(f32 x)
 {
-	__m128 val = _mm_set_ss(x);
-#if RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_SQRT_RCP
-	return _mm_cvtss_f32(_mm_rcp_ss(_mm_sqrt_ss(val)));
-#else
-	return _mm_cvtss_f32(_mm_rsqrt_ss(val));
-#endif
+	return _mm_cvtss_f32(rg_math_rsqrt_ss(_mm_set_ss(x)));
 }
 #else
 #define rg_rsqrtf(x) (1.0f / sqrtf((x)))
@@ -606,14 +633,7 @@ typedef union rg_float_bits
 RGINLINE f32 rg_rsqrtf(f32 x)
 {
 #if RG_MATH_MAX_PERF || defined(RG_MATH_FAST_MATH)
-	__m128 val = _mm_set_ss(x);
-#if RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_SQRT_RCP
-	__m128 sqrt = _mm_sqrt_ss(val);
-	__m128 inv = _mm_rcp_ss(sqrt);
-	return _mm_cvtss_f32(inv);
-#else
-	return _mm_cvtss_f32(_mm_rsqrt_ss(val));
-#endif
+	return _mm_cvtss_f32(rg_math_rsqrt_ss(_mm_set_ss(x)));
 #elif RG_MATH_USE_LIBC
 	return 1.0f / sqrtf(x);
 #else
@@ -630,8 +650,7 @@ RGINLINE f32 rg_rsqrtf(f32 x)
 #endif
 RGINLINE f32 rg_rsqrtf_fast(f32 x)
 {
-	__m128 val = _mm_set_ss(x);
-	return _mm_cvtss_f32(_mm_rsqrt_ss(val));
+	return _mm_cvtss_f32(rg_math_rsqrt_ss(_mm_set_ss(x)));
 }
 #else
 #if !(RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES)
@@ -648,8 +667,8 @@ RGINLINE f32 rg_rsqrtf(f32 x)
 	rg_float_bits conv;
 	conv.f = x;
 	conv.u = 0x5F3759DF - (conv.u >> 1);           // Initial guess
-	conv.f *= 1.5f - (x * 0.5f * conv.f * conv.f); // Newton-Raphson iteration 1
-	conv.f *= 1.5f - (x * 0.5f * conv.f * conv.f); // Newton-Raphson iteration 2
+	conv.f *= 1.5f - (x * conv.f * conv.f * 0.5f); // Newton-Raphson iteration 1 (x*r*r first: no FTZ underflow)
+	conv.f *= 1.5f - (x * conv.f * conv.f * 0.5f); // Newton-Raphson iteration 2
 	return conv.f;
 #endif
 }
@@ -658,7 +677,10 @@ RGINLINE f32 rg_rsqrtf_fast(f32 x)
 {
 	rg_float_bits conv;
 	conv.f = x;
-	conv.u = 0x5F3759DF - (conv.u >> 1); // Initial guess (no refinement)
+	conv.u = 0x5F3759DF - (conv.u >> 1); // Initial guess
+#if RG_MATH_RSQRT_MODE != RG_MATH_RSQRT_MODE_RSQRT_RAW
+	conv.f *= 1.5f - (x * conv.f * conv.f * 0.5f); // Newton-Raphson iteration 1 (x*r*r first: no FTZ underflow)
+#endif
 	return conv.f;
 }
 #endif
@@ -1052,9 +1074,19 @@ RGINLINE f32 rg_cosf_fast(f32 x)
 #endif
 #endif
 
+// glibc's sincosf (one call, FMA/ifunc dispatched) is faster than the MAX_PERF
+// polynomial below in baseline SSE2 builds and correctly rounded, so prefer it
+// there. With FMA enabled the contracted polynomial is faster again, and other
+// libcs keep the polynomial. RG_MATH_SINCOS_POLY forces the polynomial.
+#if RG_MATH_MAX_PERF && defined(__GLIBC__) && defined(RG_MATH_HAS_BUILTIN_SINCOSF) && !defined(RG_MATH_FMA) && !defined(RG_MATH_SINCOS_POLY)
+#define RG_MATH_SINCOS_LIBC 1
+#else
+#define RG_MATH_SINCOS_LIBC 0
+#endif
+
 RGINLINE void rg_sincosf(f32 x, f32* out_sin, f32* out_cos)
 {
-#if RG_MATH_MAX_PERF
+#if RG_MATH_MAX_PERF && !RG_MATH_SINCOS_LIBC
 	f32 quotient = x * (1.0f / RG_TAU);
 	if (x >= 0.0f)
 	{

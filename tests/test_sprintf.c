@@ -12,7 +12,9 @@
 #include "../src/rg_sprintf.h"
 #endif
 
+#include <float.h>
 #include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -271,6 +273,144 @@ static void test_integer_limits(void)
 	CHECK_LIBC("%ju", UINTMAX_MAX);
 }
 
+static void check_integer_boundary_u32(uint32_t value)
+{
+	CHECK_LIBC("%u", value);
+	CHECK_LIBC("%x", value);
+	CHECK_LIBC("%X", value);
+	CHECK_LIBC("%o", value);
+	CHECK_LIBC("%#x", value);
+	CHECK_LIBC("%#X", value);
+	CHECK_LIBC("%#o", value);
+	CHECK_LIBC("%08u", value);
+	CHECK_LIBC("%12u", value);
+	CHECK_LIBC("%-12u|", value);
+	CHECK_LIBC("%.11u", value);
+	CHECK_LIBC("%lu", (unsigned long)value);
+	CHECK_LIBC("%zu", (size_t)value);
+	char buffer[16];
+	char expected[16];
+	char* end = rg_utoa(value, buffer);
+	int digits = sprintf(expected, "%u", value);
+	CHECK(strcmp(buffer, expected) == 0);
+	CHECK(end == buffer + digits);
+}
+
+static void check_integer_boundary_i32(int32_t value)
+{
+	CHECK_LIBC("%d", value);
+	CHECK_LIBC("%i", value);
+	CHECK_LIBC("%8d", value);
+	CHECK_LIBC("%-8d|", value);
+	CHECK_LIBC("%08d", value);
+	CHECK_LIBC("%012d", value);
+	CHECK_LIBC("%+d", value);
+	CHECK_LIBC("% d", value);
+	CHECK_LIBC("%.5d", value);
+	CHECK_LIBC("%.11d", value);
+	CHECK_LIBC("%+012d", value);
+	CHECK_LIBC("%ld", (long)value);
+	char buffer[16];
+	char expected[16];
+	char* end = rg_itoa(value, buffer);
+	int digits = sprintf(expected, "%d", value);
+	CHECK(strcmp(buffer, expected) == 0);
+	CHECK(end == buffer + digits);
+}
+
+static void check_integer_boundary_u64(uint64_t value)
+{
+	unsigned long long v = (unsigned long long)value;
+	CHECK_LIBC("%llu", v);
+	CHECK_LIBC("%llx", v);
+	CHECK_LIBC("%llX", v);
+	CHECK_LIBC("%llo", v);
+	CHECK_LIBC("%#llx", v);
+	CHECK_LIBC("%#llo", v);
+	CHECK_LIBC("%08llu", v);
+	CHECK_LIBC("%24llu", v);
+	CHECK_LIBC("%-24llu|", v);
+	CHECK_LIBC("%.21llu", v);
+	CHECK_LIBC("%ju", (uintmax_t)value);
+	if (value <= SIZE_MAX) CHECK_LIBC("%zu", (size_t)value);
+	if (value <= ULONG_MAX) CHECK_LIBC("%lu", (unsigned long)value);
+	char buffer[24];
+	char expected[24];
+	char* end = rg_u64toa(value, buffer);
+	int digits = sprintf(expected, "%llu", v);
+	CHECK(strcmp(buffer, expected) == 0);
+	CHECK(end == buffer + digits);
+}
+
+static void check_integer_boundary_i64(int64_t value)
+{
+	long long v = (long long)value;
+	CHECK_LIBC("%lld", v);
+	CHECK_LIBC("%lli", v);
+	CHECK_LIBC("%8lld", v);
+	CHECK_LIBC("%-24lld|", v);
+	CHECK_LIBC("%024lld", v);
+	CHECK_LIBC("%+lld", v);
+	CHECK_LIBC("% lld", v);
+	CHECK_LIBC("%.5lld", v);
+	CHECK_LIBC("%.21lld", v);
+	CHECK_LIBC("%+024lld", v);
+	CHECK_LIBC("%jd", (intmax_t)value);
+	if (value >= PTRDIFF_MIN && value <= PTRDIFF_MAX) CHECK_LIBC("%td", (ptrdiff_t)value);
+	if (value >= LONG_MIN && value <= LONG_MAX) CHECK_LIBC("%ld", (long)value);
+	char buffer[24];
+	char expected[24];
+	char* end = rg_i64toa(value, buffer);
+	int digits = sprintf(expected, "%lld", v);
+	CHECK(strcmp(buffer, expected) == 0);
+	CHECK(end == buffer + digits);
+}
+
+static void check_integer_boundary(uint64_t magnitude)
+{
+	// Every magnitude is checked with its neighbours so that digit-count and
+	// chunking transitions are hit from both sides.
+	for (int offset = -1; offset <= 1; ++offset)
+	{
+		uint64_t value = magnitude + (uint64_t)(int64_t)offset;
+		if (magnitude == 0 && offset < 0) continue;
+		if (magnitude == UINT64_MAX && offset > 0) continue;
+		check_integer_boundary_u64(value);
+		if (value <= (uint64_t)INT64_MAX)
+		{
+			check_integer_boundary_i64((int64_t)value);
+			check_integer_boundary_i64(-(int64_t)value);
+		}
+		if (value == (uint64_t)INT64_MAX + 1u) check_integer_boundary_i64(INT64_MIN);
+		if (value <= UINT32_MAX)
+		{
+			check_integer_boundary_u32((uint32_t)value);
+			if (value <= (uint64_t)INT32_MAX)
+			{
+				check_integer_boundary_i32((int32_t)value);
+				check_integer_boundary_i32(-(int32_t)value);
+			}
+			if (value == (uint64_t)INT32_MAX + 1u) check_integer_boundary_i32(INT32_MIN);
+		}
+	}
+}
+
+static void test_integer_boundaries(void)
+{
+	// Powers of two and ten across the 32- and 64-bit ranges. A digit-count
+	// table that is wrong for values at or above 2^30 or 10^9 fails here.
+	for (int bit = 0; bit < 64; ++bit) check_integer_boundary((uint64_t)1 << bit);
+	for (uint64_t power = 1;; power *= 10u)
+	{
+		check_integer_boundary(power);
+		if (power > UINT64_MAX / 10u) break;
+	}
+	check_integer_boundary(UINT64_MAX);
+	check_integer_boundary((uint64_t)INT64_MAX);
+	check_integer_boundary(UINT32_MAX);
+	check_integer_boundary((uint64_t)INT32_MAX);
+}
+
 static void test_floating_point(void)
 {
 	CHECK_LIBC("%.2f", 3.25);
@@ -278,6 +418,74 @@ static void test_floating_point(void)
 	CHECK_LIBC("%.6e", 0.000001);
 	CHECK_LIBC("%.4g", 12.5);
 	CHECK_LIBC("%+.1f", 2.0);
+}
+
+// %.0e and %#g are left out: ties round half up rather than half to even,
+// and the '#' flag does not follow libc for %g. Both predate this test.
+static void check_exponent_formats(double value)
+{
+	CHECK_LIBC("%e", value);
+	CHECK_LIBC("%E", value);
+	CHECK_LIBC("%.3e", value);
+	CHECK_LIBC("%+.6e", value);
+	CHECK_LIBC("%14.2e|", value);
+	CHECK_LIBC("%-14.2e|", value);
+	CHECK_LIBC("%g", value);
+	CHECK_LIBC("%G", value);
+	CHECK_LIBC("%.3g", value);
+	CHECK_LIBC("%.10g", value);
+	CHECK_LIBC("%e", -value);
+	CHECK_LIBC("%g", -value);
+}
+
+static void test_floating_point_extremes(void)
+{
+	// Exponent normalization across the whole double range: the decimal
+	// exponent must be found without a loop that is linear in its magnitude,
+	// and the mantissa must still round like libc at these precisions.
+	static const double values[] = {
+		1e300, 1.5e300, 1e-300, 1.5e-300, 1e38, 1e-38, 1.17549435e-38,
+		3.4028235e38, DBL_MAX, DBL_MIN, DBL_TRUE_MIN, DBL_EPSILON,
+		2.2250738585072009e-308, 1e-310, 4.9406564584124654e-324,
+		1e22, 1e23, 1e15, 1e16, 1e17, 1e18, 1e19, 1e-5, 1e-4, 1e-6, 1e-7,
+		123.456e-20, 6.02214076e23, 1.602176634e-19, 299792458.0,
+		0.5, 0.25, 0.125, 0.0625, 127.999, 128.0, 1023.0, 1024.0, 1025.0,
+		9.999999e10, 9.999999e-10, 9.99999e300, 9.99999e-300,
+		1.9999999e15, 2.00000001e15, 0.0, -0.0
+	};
+	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i)
+		check_exponent_formats(values[i]);
+	// Exact powers of ten: the estimate from the binary exponent is sometimes
+	// one low or one high here and must be corrected. Neighbours that round up
+	// to the next power are checked where %g always selects exponent form;
+	// the fixed-point %g branch does not fold that carry into the exponent.
+	for (int exponent = -307; exponent <= 308; ++exponent)
+	{
+		double power = pow(10.0, exponent);
+		check_exponent_formats(power);
+		if (exponent < 308) check_exponent_formats(1.5 * power);
+		if (exponent < -4 || exponent > 10)
+		{
+			check_exponent_formats(nextafter(power, 0.0));
+			check_exponent_formats(nextafter(power, INFINITY));
+		}
+	}
+	CHECK_LIBC("%.0e", 1e300);
+	CHECK_LIBC("%.0e", 1e-300);
+	CHECK_LIBC("%.0e", 1.25e38);
+	CHECK_LIBC("%.0e", 7.0);
+	CHECK_LIBC("%.0e", 9.7e-38);
+	// Subnormals.
+	for (int exponent = -323; exponent <= -308; ++exponent)
+		check_exponent_formats(1.5 * pow(10.0, exponent));
+	CHECK_LIBC("%e", INFINITY);
+	CHECK_LIBC("%e", -INFINITY);
+	CHECK_LIBC("%g", INFINITY);
+	CHECK_LIBC("%g", -INFINITY);
+	CHECK_LIBC("%10e|", INFINITY);
+	CHECK_LIBC("%e", NAN);
+	CHECK_LIBC("%g", NAN);
+	CHECK_LIBC("%f", NAN);
 }
 
 static void test_snprintf_bounds(void)
@@ -641,7 +849,9 @@ int main(void)
 	test_string_exact_heap_objects();
 	test_general_string_widths();
 	test_integer_limits();
+	test_integer_boundaries();
 	test_floating_point();
+	test_floating_point_extremes();
 	test_snprintf_bounds();
 	test_string_precision();
 	test_string_precision_guard_page();

@@ -98,7 +98,12 @@ void rg_random_shuffle(void* data, size_t count, size_t stride, RgRng* rng);
 void rg_random_fill_bytes(void* data, size_t size, RgRng* rng);
 ```
 
-Shuffle retains its original 64-bit sampling sequence and RNG state advancement.
+Shuffle draws each swap index with `rg_random_bounded_u64`, so it consumes the
+same 64-bit draws and makes the same accept/reject decisions as earlier
+releases: the shuffled order and the RNG state afterwards are unchanged for a
+given seed. Elements of 4, 8, 16, and 32 bytes are swapped with fixed-size
+copies; other strides use a generic byte-wise swap. The tests pin golden
+shuffles for each of these widths.
 
 ## Distributions
 

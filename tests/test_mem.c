@@ -208,6 +208,40 @@ static void test_typed_macros(void)
 	rg_free();
 }
 
+// Every pool page must be zero-filled and writable whether or not the pages
+// were faulted in up front (RG_MALLOC_PREFAULT) or advised as huge pages
+// (RG_MALLOC_HUGE_PAGES); the options change timing, not contents.
+static void test_pool_first_touch(void)
+{
+	reset_pool();
+	CHECK(RG_MALLOC_PREFAULT == 0 || RG_MALLOC_PREFAULT == 1);
+	CHECK(RG_MALLOC_HUGE_PAGES == 0 || RG_MALLOC_HUGE_PAGES == 1);
+	CHECK(rg_malloc(MB(4)) == 0);
+	RgArena arena = rg_arena_create(MB(2));
+	CHECK(arena.memory != NULL);
+	size_t bytes = rg_arena_remaining(&arena);
+	unsigned char* block = (unsigned char*)rg_arena_alloc(&arena, bytes);
+	CHECK(block != NULL);
+	if (block == NULL)
+	{
+		rg_free();
+		return;
+	}
+	size_t page = 4096;
+	int all_zero = 1;
+	for (size_t offset = 0; offset < bytes; offset += page)
+		all_zero &= block[offset] == 0 && block[offset + page / 2] == 0;
+	all_zero &= block[bytes - 1] == 0;
+	CHECK(all_zero);
+	for (size_t offset = 0; offset < bytes; offset += page)
+		block[offset] = (unsigned char)(offset / page);
+	int round_trip = 1;
+	for (size_t offset = 0; offset < bytes; offset += page)
+		round_trip &= block[offset] == (unsigned char)(offset / page);
+	CHECK(round_trip);
+	rg_free();
+}
+
 static void test_multiple_arenas(void)
 {
 	reset_pool();
@@ -242,6 +276,7 @@ int main(void)
 	test_reset_and_decommit();
 	test_exhaustion_and_overflow();
 	test_typed_macros();
+	test_pool_first_touch();
 	test_multiple_arenas();
 	rg_free();
 

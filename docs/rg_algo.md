@@ -54,9 +54,20 @@ rg_algo_sort_EntityAlgo(entities, entity_count);
 
 The regular sort recognizes already nondecreasing input and returns after one
 linear scan. Nonincreasing input is reversed in place after the same scan.
-Other inputs use introsort: partitioning handles large ranges, insertion sort
-finishes small ranges, and heap sort provides the worst-case fallback. It is
-not stable.
+Other inputs use a pattern-defeating quicksort. Pivots come from a median of
+three, or a median of three medians above `RG_ALGO_NINTHER_CUTOFF` elements.
+Large ranges are partitioned in blocks of `RG_ALGO_BLOCK` elements: each block
+records the offsets of misplaced elements with branch-free comparisons and
+then swaps them in bulk, so random data does not pay for mispredicted
+branches. Ranges that the first scans find mostly in order, and ranges below
+128 elements, use a conventional branching Hoare partition instead. Ranges of
+elements equal to the previous pivot are recognized and skipped, so many
+duplicates finish in linear time per level, and a partition that moves
+nothing triggers a bounded insertion sort that finishes nearly sorted input
+early. Insertion sort finishes small ranges, strongly unbalanced partitions
+shuffle a few elements to break adversarial patterns, and heap sort provides
+the worst-case fallback after too many unbalanced partitions. It is not
+stable.
 
 The stable sort uses insertion-sorted runs followed by stable merging. Scratch
 must contain at least `count` elements and must not overlap the input:
@@ -69,7 +80,8 @@ rg_algo_stable_sort_EntityAlgo(entities, entity_count,
 
 `rg_algo_nth_element_name` places the value that a complete sort would put at
 `nth` into that position. Values before it do not compare greater and values
-after it do not compare less, but neither side is otherwise sorted.
+after it do not compare less, but neither side is otherwise sorted. It uses
+the same pivot selection and partitions as the sort.
 
 Search operations require sorted input. Binary search returns the first
 equivalent element, or `RG_ALGO_INVALID` when the key is absent. Min/max
@@ -121,7 +133,14 @@ input.
 | --- | --- |
 | Arbitrary comparator, any C type, no allocation or caller scratch | `rg_algo_sort_name` |
 | Stable arbitrary ordering with caller scratch | `rg_algo_stable_sort_name` |
-| Stable 32-bit or 64-bit integer-key throughput with caller scratch | `rg_algo_radix_sort_name` |
+| Stable 32-bit integer-key throughput with caller scratch | `rg_algo_radix_sort_name` |
+| 64-bit integer keys | Measure: `rg_algo_sort_name` or `rg_algo_radix_sort_name` |
+
+Radix sorting leads clearly for 32-bit keys. For full-range 64-bit keys the
+block-partitioned comparison sort finished the one-million 32-byte record
+workload faster than the eight-pass radix sort, so prefer `rg_algo_sort_name`
+there unless the key distribution leaves most radix passes skipped or
+stability is required.
 
 ## Performance
 
@@ -137,21 +156,28 @@ Define options before including the header:
 ```c
 #define RG_ALGO_ASSERT(condition)       // Custom assertion macro
 #define RG_ALGO_INVALID SIZE_MAX        // Invalid index sentinel
-#define RG_ALGO_INSERTION_CUTOFF 24     // Introsort insertion cutoff
+#define RG_ALGO_INSERTION_CUTOFF 24     // Quicksort insertion cutoff
 #define RG_ALGO_STABLE_RUN 8            // Stable-sort insertion run
-#define RG_ALGO_STACK_CAP 64             // Introsort range stack capacity
+#define RG_ALGO_STACK_CAP 64             // Quicksort range stack capacity
+#define RG_ALGO_BLOCK 64                 // Block partition size
+#define RG_ALGO_NINTHER_CUTOFF 128       // Median-of-medians pivot cutoff
 #define RG_ALGO_RADIX_BITS 8             // Bits processed per radix pass
 #include "rg_algo.h"
 ```
 
-`RG_ALGO_RADIX_BITS` may range from 4 through 16. More bits reduce the number
-of passes but enlarge the stack-allocated bucket table. The default uses 256
-buckets. If the introsort range stack reaches `RG_ALGO_STACK_CAP`, the current
-range safely falls back to heap sort.
+`RG_ALGO_INSERTION_CUTOFF` must be at least 2. `RG_ALGO_RADIX_BITS` may range
+from 4 through 16. More bits reduce the number of passes but enlarge the
+stack-allocated bucket table. The default uses 256 buckets. If the quicksort
+range stack reaches `RG_ALGO_STACK_CAP`, the range that would have been pushed
+safely falls back to heap sort. `RG_ALGO_BLOCK` may range from 1 through 255
+and sets how many elements each partition block scans before swapping; it also
+sizes two stack-allocated offset tables of that many bytes. Ranges larger than
+`RG_ALGO_NINTHER_CUTOFF` (at least 8) choose the pivot from three medians of
+three instead of one.
 
 ## Complexity
 
-- Introsort: `O(n log n)` worst-case time and no caller scratch.
+- Sort: `O(n log n)` worst-case time and no caller scratch.
 - Stable sort: `O(n log n)` time and `count * sizeof(type)` scratch.
 - `nth_element`: linear expected time and quadratic worst-case time.
 - Binary search and bounds: `O(log n)` time.

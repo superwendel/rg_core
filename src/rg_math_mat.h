@@ -2528,6 +2528,12 @@ RGINLINE void rg_mat4_from_quat(rg_mat4* m, const rg_quat* q)
 	f32 wy = w * yk;
 	f32 wz = w * zk;
 
+#ifdef RG_MATH_SSE
+	_mm_storeu_ps(&m->m[0], _mm_setr_ps(1.0f - yy - zz, xy + wz, xz - wy, 0.0f));
+	_mm_storeu_ps(&m->m[4], _mm_setr_ps(xy - wz, 1.0f - xx - zz, yz + wx, 0.0f));
+	_mm_storeu_ps(&m->m[8], _mm_setr_ps(xz + wy, yz - wx, 1.0f - xx - yy, 0.0f));
+	_mm_storeu_ps(&m->m[12], _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f));
+#else
 	m->m[0] = 1.0f - yy - zz;
 	m->m[1] = xy + wz;
 	m->m[2] = xz - wy;
@@ -2547,6 +2553,7 @@ RGINLINE void rg_mat4_from_quat(rg_mat4* m, const rg_quat* q)
 	m->m[13] = 0.0f;
 	m->m[14] = 0.0f;
 	m->m[15] = 1.0f;
+#endif
 }
 
 RGINLINE void rg_mat4_trs_make(rg_mat4* m, const rg_vec3* t, const rg_quat* r, const rg_vec3* s)
@@ -2571,6 +2578,31 @@ RGINLINE void rg_mat4_trs_make(rg_mat4* m, const rg_vec3* t, const rg_quat* r, c
 	f32 k = 2.0f / norm;
 #endif
 
+#ifdef RG_MATH_SSE
+	// Column c0 = e0 + zk*(-z, w, x, 0) - yk*(y, -x, w, 0), and cyclic
+	// permutations, built from sign-flipped shuffles of the quaternion.
+	RG_UNUSED(x);
+	RG_UNUSED(y);
+	RG_UNUSED(z);
+	RG_UNUSED(w);
+	__m128 q = r->simd;
+	__m128 qk = _mm_mul_ps(q, _mm_set1_ps(k));
+	__m128 xk = _mm_shuffle_ps(qk, qk, _MM_SHUFFLE(0, 0, 0, 0));
+	__m128 yk = _mm_shuffle_ps(qk, qk, _MM_SHUFFLE(1, 1, 1, 1));
+	__m128 zk = _mm_shuffle_ps(qk, qk, _MM_SHUFFLE(2, 2, 2, 2));
+	__m128 xyz_mask = _mm_castsi128_ps(_mm_setr_epi32(-1, -1, -1, 0));
+	__m128 p = _mm_and_ps(_mm_xor_ps(_mm_shuffle_ps(q, q, _MM_SHUFFLE(3, 3, 0, 1)), _mm_setr_ps(0.0f, -0.0f, 0.0f, 0.0f)), xyz_mask); // (y, -x, w, 0)
+	__m128 qq = _mm_and_ps(_mm_xor_ps(_mm_shuffle_ps(q, q, _MM_SHUFFLE(3, 0, 3, 2)), _mm_setr_ps(-0.0f, 0.0f, 0.0f, 0.0f)), xyz_mask); // (-z, w, x, 0)
+	__m128 rr = _mm_and_ps(_mm_xor_ps(_mm_shuffle_ps(q, q, _MM_SHUFFLE(3, 1, 2, 3)), _mm_setr_ps(0.0f, 0.0f, -0.0f, 0.0f)), xyz_mask); // (w, z, -y, 0)
+	__m128 c0 = _mm_add_ps(_mm_setr_ps(1.0f, 0.0f, 0.0f, 0.0f), _mm_sub_ps(_mm_mul_ps(zk, qq), _mm_mul_ps(yk, p)));
+	__m128 c1 = _mm_add_ps(_mm_setr_ps(0.0f, 1.0f, 0.0f, 0.0f), _mm_sub_ps(_mm_mul_ps(xk, p), _mm_mul_ps(zk, rr)));
+	__m128 c2 = _mm_add_ps(_mm_setr_ps(0.0f, 0.0f, 1.0f, 0.0f), _mm_sub_ps(_mm_mul_ps(yk, rr), _mm_mul_ps(xk, qq)));
+	__m128 sv = RG_VEC3_LOAD(s);
+	_mm_storeu_ps(&m->m[0], _mm_mul_ps(c0, _mm_shuffle_ps(sv, sv, _MM_SHUFFLE(0, 0, 0, 0))));
+	_mm_storeu_ps(&m->m[4], _mm_mul_ps(c1, _mm_shuffle_ps(sv, sv, _MM_SHUFFLE(1, 1, 1, 1))));
+	_mm_storeu_ps(&m->m[8], _mm_mul_ps(c2, _mm_shuffle_ps(sv, sv, _MM_SHUFFLE(2, 2, 2, 2))));
+	_mm_storeu_ps(&m->m[12], _mm_or_ps(_mm_and_ps(RG_VEC3_LOAD(t), xyz_mask), _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f)));
+#else
 	f32 xx = x * x * k;
 	f32 xy = x * y * k;
 	f32 xz = x * z * k;
@@ -2604,6 +2636,7 @@ RGINLINE void rg_mat4_trs_make(rg_mat4* m, const rg_vec3* t, const rg_quat* r, c
 	m->m[13] = t->y;
 	m->m[14] = t->z;
 	m->m[15] = 1.0f;
+#endif
 }
 
 RGINLINE void rg_mat4_translate(const rg_mat4* m, const rg_vec3* v, rg_mat4* out)
@@ -5035,6 +5068,54 @@ RGINLINE f32 rg_mat4_det(const rg_mat4* m)
 
 RGINLINE void rg_mat4_inv(const rg_mat4* m, rg_mat4* out)
 {
+#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+	// 2x2-block inverse (Eric Zhang). The columns are fed in as rows, so this
+	// computes inv(M^T) = inv(M)^T row-major; storing its rows as columns yields inv(M).
+#define RG_MAT4_INV_SWZ(v, x, y, z, w) _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(v), _MM_SHUFFLE(w, z, y, x)))
+#define RG_MAT4_INV_SHF(a, b, x, y, z, w) _mm_shuffle_ps(a, b, _MM_SHUFFLE(w, z, y, x))
+	__m128 r0 = _mm_loadu_ps(&m->m[0]);
+	__m128 r1 = _mm_loadu_ps(&m->m[4]);
+	__m128 r2 = _mm_loadu_ps(&m->m[8]);
+	__m128 r3 = _mm_loadu_ps(&m->m[12]);
+	__m128 ma = _mm_movelh_ps(r0, r1);
+	__m128 mb = _mm_movehl_ps(r1, r0);
+	__m128 mc = _mm_movelh_ps(r2, r3);
+	__m128 md = _mm_movehl_ps(r3, r2);
+	// Determinants of the four 2x2 blocks: |A|, |B|, |C|, |D|
+	__m128 det_sub = _mm_sub_ps(_mm_mul_ps(RG_MAT4_INV_SHF(r0, r2, 0, 2, 0, 2), RG_MAT4_INV_SHF(r1, r3, 1, 3, 1, 3)),
+	                            _mm_mul_ps(RG_MAT4_INV_SHF(r0, r2, 1, 3, 1, 3), RG_MAT4_INV_SHF(r1, r3, 0, 2, 0, 2)));
+	__m128 det_a = RG_MAT4_INV_SWZ(det_sub, 0, 0, 0, 0);
+	__m128 det_b = RG_MAT4_INV_SWZ(det_sub, 1, 1, 1, 1);
+	__m128 det_c = RG_MAT4_INV_SWZ(det_sub, 2, 2, 2, 2);
+	__m128 det_d = RG_MAT4_INV_SWZ(det_sub, 3, 3, 3, 3);
+	// D#C and A#B (2x2 adjugate times matrix)
+	__m128 d_c = _mm_sub_ps(_mm_mul_ps(RG_MAT4_INV_SWZ(md, 3, 3, 0, 0), mc), _mm_mul_ps(RG_MAT4_INV_SWZ(md, 1, 1, 2, 2), RG_MAT4_INV_SWZ(mc, 2, 3, 0, 1)));
+	__m128 a_b = _mm_sub_ps(_mm_mul_ps(RG_MAT4_INV_SWZ(ma, 3, 3, 0, 0), mb), _mm_mul_ps(RG_MAT4_INV_SWZ(ma, 1, 1, 2, 2), RG_MAT4_INV_SWZ(mb, 2, 3, 0, 1)));
+	// X# = |D|A - B(D#C), W# = |A|D - C(A#B)
+	__m128 x = _mm_sub_ps(_mm_mul_ps(det_d, ma), _mm_add_ps(_mm_mul_ps(mb, RG_MAT4_INV_SWZ(d_c, 0, 3, 0, 3)), _mm_mul_ps(RG_MAT4_INV_SWZ(mb, 1, 0, 3, 2), RG_MAT4_INV_SWZ(d_c, 2, 1, 2, 1))));
+	__m128 w = _mm_sub_ps(_mm_mul_ps(det_a, md), _mm_add_ps(_mm_mul_ps(mc, RG_MAT4_INV_SWZ(a_b, 0, 3, 0, 3)), _mm_mul_ps(RG_MAT4_INV_SWZ(mc, 1, 0, 3, 2), RG_MAT4_INV_SWZ(a_b, 2, 1, 2, 1))));
+	// Y# = |B|C - D(A#B)#, Z# = |C|B - A(D#C)#
+	__m128 y = _mm_sub_ps(_mm_mul_ps(det_b, mc), _mm_sub_ps(_mm_mul_ps(md, RG_MAT4_INV_SWZ(a_b, 3, 0, 3, 0)), _mm_mul_ps(RG_MAT4_INV_SWZ(md, 1, 0, 3, 2), RG_MAT4_INV_SWZ(a_b, 2, 1, 2, 1))));
+	__m128 z = _mm_sub_ps(_mm_mul_ps(det_c, mb), _mm_sub_ps(_mm_mul_ps(ma, RG_MAT4_INV_SWZ(d_c, 3, 0, 3, 0)), _mm_mul_ps(RG_MAT4_INV_SWZ(ma, 1, 0, 3, 2), RG_MAT4_INV_SWZ(d_c, 2, 1, 2, 1))));
+	// |M| = |A||D| + |B||C| - tr((A#B)(D#C))
+	__m128 det_m = _mm_add_ps(_mm_mul_ps(det_a, det_d), _mm_mul_ps(det_b, det_c));
+	__m128 tr = _mm_mul_ps(a_b, RG_MAT4_INV_SWZ(d_c, 0, 2, 1, 3));
+	tr = _mm_add_ps(tr, _mm_movehl_ps(tr, tr));
+	tr = _mm_add_ss(tr, RG_MAT4_INV_SWZ(tr, 1, 1, 1, 1));
+	det_m = _mm_sub_ps(det_m, RG_MAT4_INV_SWZ(tr, 0, 0, 0, 0));
+	RG_MATH_ASSERT(_mm_cvtss_f32(det_m) != 0.0f);
+	__m128 rdet = _mm_div_ps(_mm_setr_ps(1.0f, -1.0f, -1.0f, 1.0f), det_m);
+	x = _mm_mul_ps(x, rdet);
+	y = _mm_mul_ps(y, rdet);
+	z = _mm_mul_ps(z, rdet);
+	w = _mm_mul_ps(w, rdet);
+	_mm_storeu_ps(&out->m[0], RG_MAT4_INV_SHF(x, y, 3, 1, 3, 1));
+	_mm_storeu_ps(&out->m[4], RG_MAT4_INV_SHF(x, y, 2, 0, 2, 0));
+	_mm_storeu_ps(&out->m[8], RG_MAT4_INV_SHF(z, w, 3, 1, 3, 1));
+	_mm_storeu_ps(&out->m[12], RG_MAT4_INV_SHF(z, w, 2, 0, 2, 0));
+#undef RG_MAT4_INV_SWZ
+#undef RG_MAT4_INV_SHF
+#else
 	f32 a = m->m[0];
 	f32 b = m->m[1];
 	f32 c = m->m[2];
@@ -5089,6 +5170,7 @@ RGINLINE void rg_mat4_inv(const rg_mat4* m, rg_mat4* out)
 	out->m[13] = (a * c9 - b * c11 + c * c7) * idt;
 	out->m[14] = (m0 * c10 - n * c12 + o * c8) * ndt;
 	out->m[15] = (i * c10 - j * c12 + k * c8) * idt;
+#endif
 }
 
 RGINLINE void rg_mat4_inv_affine(const rg_mat4* m, rg_mat4* out)

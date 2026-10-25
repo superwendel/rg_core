@@ -23,6 +23,8 @@
 //   #define RG_MALLOC_ASSERT(x)           - Custom assertion macro
 //   #define RG_MALLOC_DEFAULT_ALIGNMENT   - Default allocation alignment (16)
 //   #define RG_MALLOC_LAZY_COMMIT         - Reserve first and commit on demand
+//   #define RG_MALLOC_PREFAULT            - Fault pool pages in at rg_malloc (0)
+//   #define RG_MALLOC_HUGE_PAGES          - Ask for transparent huge pages (0)
 //
 // UNITY BUILD NOTE:
 //   - The global pool state is static. A unity build shares one pool;
@@ -74,6 +76,32 @@
 #error RG_MALLOC_LAZY_COMMIT is currently supported only on Windows
 #endif
 
+// RG_MALLOC_PREFAULT=1 touches every pool page when the memory is obtained, so
+// the page faults (roughly 65k for a 256 MB pool) are paid once at startup
+// instead of inside the frames that first use the memory. With
+// RG_MALLOC_LAZY_COMMIT the pool is only reserved, so the faults are taken when
+// an arena commits pages instead. Pages still start out zeroed either way.
+#ifndef RG_MALLOC_PREFAULT
+#define RG_MALLOC_PREFAULT 0
+#endif
+
+#if RG_MALLOC_PREFAULT != 0 && RG_MALLOC_PREFAULT != 1
+#error RG_MALLOC_PREFAULT must be 0 or 1
+#endif
+
+// RG_MALLOC_HUGE_PAGES=1 asks the kernel to back the pool with transparent
+// huge pages (Linux madvise(MADV_HUGEPAGE)): fewer faults on first touch and
+// less TLB pressure for large arenas. A hint only; the fallback is ordinary
+// pages. Windows large pages need SeLockMemoryPrivilege and macOS superpages
+// are not exposed through mmap, so the option is a no-op there.
+#ifndef RG_MALLOC_HUGE_PAGES
+#define RG_MALLOC_HUGE_PAGES 0
+#endif
+
+#if RG_MALLOC_HUGE_PAGES != 0 && RG_MALLOC_HUGE_PAGES != 1
+#error RG_MALLOC_HUGE_PAGES must be 0 or 1
+#endif
+
 typedef struct RgArena
 {
 	char* memory;
@@ -107,18 +135,42 @@ RGINLINE size_t rg_arena_remaining(const RgArena* arena);
 // PLATFORM MEMORY
 // =============================================================================
 
+static size_t rg_mem_page_size = 4096u;
+
+#if RG_MALLOC_PREFAULT
+// Write one byte per page so the OS maps every page now. The pool is fresh
+// (zero-filled) memory, so writing zero leaves its contents unchanged.
+static RG_NOINLINE void rg_mem_os_touch(void* ptr, size_t size)
+{
+	volatile char* bytes = (volatile char*)ptr;
+	size_t page = rg_mem_page_size;
+	for (size_t offset = 0; offset < size; offset += page)
+		bytes[offset] = 0;
+	if (size > 0)
+		bytes[size - 1] = 0;
+}
+#endif
+
 #if RG_PLATFORM_WINDOWS
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 
+// RG_MALLOC_HUGE_PAGES is a no-op here: MEM_LARGE_PAGES requires the caller to
+// hold SeLockMemoryPrivilege and a size that is a multiple of the large page
+// size, which is a process configuration concern rather than a library default.
 RGINLINE void* rg_mem_os_alloc(size_t size)
 {
 #if RG_MALLOC_LAZY_COMMIT
 	return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_READWRITE);
 #else
-	return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	void* ptr = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#if RG_MALLOC_PREFAULT
+	if (ptr != NULL)
+		rg_mem_os_touch(ptr, size);
+#endif
+	return ptr;
 #endif
 }
 
@@ -131,7 +183,12 @@ RGINLINE void rg_mem_os_free(void* ptr, size_t size)
 #if RG_MALLOC_LAZY_COMMIT
 RGINLINE int rg_mem_os_commit(void* ptr, size_t size)
 {
-	return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) != NULL;
+	if (VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) == NULL)
+		return 0;
+#if RG_MALLOC_PREFAULT
+	rg_mem_os_touch(ptr, size);
+#endif
+	return 1;
 }
 
 RGINLINE void rg_mem_os_decommit(void* ptr, size_t size)
@@ -149,10 +206,31 @@ RGINLINE void rg_mem_os_decommit(void* ptr, size_t size)
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
+// Prefaulting without huge pages uses MAP_POPULATE: one batched fault-in inside
+// mmap. With huge pages the populate would run before the madvise and pin 4K
+// pages, so that combination touches the pages after the advice instead.
+#if RG_MALLOC_PREFAULT && !RG_MALLOC_HUGE_PAGES && defined(MAP_POPULATE)
+#define RG_MEM_MMAP_FLAGS (MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE)
+#define RG_MEM_TOUCH_AFTER_MMAP 0
+#else
+#define RG_MEM_MMAP_FLAGS (MAP_PRIVATE | MAP_ANONYMOUS)
+#define RG_MEM_TOUCH_AFTER_MMAP RG_MALLOC_PREFAULT
+#endif
+
 RGINLINE void* rg_mem_os_alloc(size_t size)
 {
-	void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	return ptr == MAP_FAILED ? NULL : ptr;
+	void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, RG_MEM_MMAP_FLAGS, -1, 0);
+	if (ptr == MAP_FAILED)
+		return NULL;
+#if RG_MALLOC_HUGE_PAGES && defined(MADV_HUGEPAGE)
+	// Advisory: when it fails (THP disabled, unsupported kernel) ordinary pages
+	// back the mapping and nothing else changes.
+	(void)madvise(ptr, size, MADV_HUGEPAGE);
+#endif
+#if RG_MEM_TOUCH_AFTER_MMAP
+	rg_mem_os_touch(ptr, size);
+#endif
+	return ptr;
 }
 
 RGINLINE void rg_mem_os_free(void* ptr, size_t size)
@@ -171,7 +249,6 @@ RGINLINE void rg_mem_os_free(void* ptr, size_t size)
 static char* rg_mem_pool;
 static size_t rg_mem_pool_size;
 static size_t rg_mem_pool_used;
-static size_t rg_mem_page_size = 4096u;
 static int rg_mem_initialized;
 
 RGINLINE int rg_mem_align_up_size(size_t value, size_t alignment, size_t* result)

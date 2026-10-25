@@ -313,10 +313,11 @@ RGINLINE void rg_quat_imag(const rg_quat* q, rg_vec3* out)
 
 RGINLINE void rg_quat_imagn(const rg_quat* q, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE41) && defined(RG_MATH_FAST_NORMALIZE)
-	__m128 v = q->simd;
-	__m128 len_sq = _mm_dp_ps(v, v, 0x7F);
-	__m128 inv_len = _mm_rsqrt_ps(len_sq);
+#if defined(RG_MATH_SSE) && defined(RG_MATH_FAST_NORMALIZE)
+	// Zero w so the 4-lane dot covers xyz only and the output pad is 0.
+	__m128 v = _mm_and_ps(q->simd, _mm_castsi128_ps(_mm_setr_epi32(-1, -1, -1, 0)));
+	__m128 len_sq = rg_math_quat_dot4_ps(v, v);
+	__m128 inv_len = rg_math_rsqrt_ps(len_sq);
 	RG_VEC3_STORE(out, _mm_mul_ps(v, inv_len));
 #else
 	f32 len_sq = q->x * q->x + q->y * q->y + q->z * q->z;
@@ -477,7 +478,7 @@ RGINLINE void rg_quat_normalize(const rg_quat* q, rg_quat* out)
 		}
 #endif
 #ifdef RG_MATH_FAST_NORMALIZE
-		__m128 inv = _mm_rsqrt_ps(dot);
+		__m128 inv = rg_math_rsqrt_ps(dot);
 #else
 		__m128 inv = _mm_div_ps(_mm_set1_ps(1.0f), _mm_sqrt_ps(dot));
 #endif
@@ -548,7 +549,7 @@ RGINLINE void rg_quat_nlerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 	__m128 tv = _mm_set1_ps(t);
 	__m128 r = RG_MATH_FMADD_PS(_mm_sub_ps(bv, av), tv, av);
 	__m128 len_sq = rg_math_quat_dot4_ps(r, r);
-	__m128 inv = _mm_rsqrt_ss(len_sq);
+	__m128 inv = rg_math_rsqrt_ss(len_sq);
 	inv = _mm_shuffle_ps(inv, inv, _MM_SHUFFLE(0, 0, 0, 0));
 	out->simd = _mm_mul_ps(r, inv);
 #else
@@ -583,14 +584,7 @@ RGINLINE void rg_quat_nlerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 	}
 #endif
 #ifdef RG_MATH_SSE
-	__m128 len = _mm_set_ss(len_sq);
-	__m128 inv = _mm_rsqrt_ss(len);
-#if !RG_MATH_MAX_PERF
-	__m128 half = _mm_set_ss(0.5f);
-	__m128 three = _mm_set_ss(3.0f);
-	inv = _mm_mul_ss(_mm_mul_ss(half, inv), _mm_sub_ss(three, _mm_mul_ss(_mm_mul_ss(len, inv), inv)));
-#endif
-	f32 inv_len = _mm_cvtss_f32(inv);
+	f32 inv_len = _mm_cvtss_f32(rg_math_rsqrt_ss(_mm_set_ss(len_sq)));
 #else
 	f32 inv_len = rg_rsqrtf(len_sq);
 #endif
@@ -601,21 +595,54 @@ RGINLINE void rg_quat_nlerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 #endif
 }
 
+#if RG_MATH_MAX_PERF
+// Interpolation weights shared by the SIMD and scalar max-performance slerp
+// paths. cos_theta is the dot of the sign-aligned inputs: 0 <= cos_theta <= 0.9995.
+RGINLINE void rg__quat_slerp_weights(f32 cos_theta, f32 t, f32* scale0, f32* scale1)
+{
+	// acos on [0, 1]: Abramowitz-Stegun 4.4.46, |error| < 2e-8 rad.
+	f32 r = -0.0012624911f;
+	r = r * cos_theta + 0.0066700901f;
+	r = r * cos_theta - 0.0170881256f;
+	r = r * cos_theta + 0.0308918810f;
+	r = r * cos_theta - 0.0501743046f;
+	r = r * cos_theta + 0.0889789874f;
+	r = r * cos_theta - 0.2145988016f;
+	r = r * cos_theta + 1.5707963050f;
+	f32 one_minus = 1.0f - cos_theta;
+	f32 angle = r * rg_sqrtf(one_minus);
+	// sin^2 = (1 - c)(1 + c) keeps its precision as c approaches 1.
+	f32 inv_sin_theta = 1.0f / rg_sqrtf(one_minus * (1.0f + cos_theta));
+	f32 y = t * angle;
+	f32 sin_t;
+	f32 cos_t;
+	if (RG_LIKELY(y >= -RG_HALF_PI && y <= RG_HALF_PI))
+	{
+		// 0 <= t <= 1 keeps t * angle within a quarter turn, so the rg_sincosf
+		// kernel applies without range reduction (same coefficients).
+		f32 y2 = y * y;
+		sin_t = (((((-2.3889859e-08f * y2 + 2.7525562e-06f) * y2 - 0.00019840874f) * y2 + 0.0083333310f) * y2 - 0.16666667f) * y2 + 1.0f) * y;
+		cos_t = ((((-2.6051615e-07f * y2 + 2.4760495e-05f) * y2 - 0.0013888378f) * y2 + 0.041666638f) * y2 - 0.5f) * y2 + 1.0f;
+	}
+	else
+	{
+		rg_sincosf(y, &sin_t, &cos_t);
+	}
+	*scale1 = sin_t * inv_sin_theta;
+	*scale0 = cos_t - cos_theta * (*scale1);
+}
+#endif
+
 RGINLINE void rg_quat_slerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* out)
 {
 #if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
 	__m128 av = a->simd;
 	__m128 bv = b->simd;
 	__m128 dotv = rg_math_quat_dot4_ps(av, bv);
-	f32 cos_theta = _mm_cvtss_f32(dotv);
-	__m128 signed_bv = bv;
-
-	if (cos_theta < 0.0f)
-	{
-		cos_theta = -cos_theta;
-		__m128 sign = _mm_castsi128_ps(_mm_set1_epi32((int)0x80000000u));
-		signed_bv = _mm_xor_ps(bv, sign);
-	}
+	// Take the shorter arc: flip b when the dot is negative (branch-free).
+	const __m128 neg_zero = _mm_set1_ps(-0.0f);
+	__m128 signed_bv = _mm_xor_ps(bv, _mm_and_ps(dotv, neg_zero));
+	f32 cos_theta = _mm_cvtss_f32(_mm_andnot_ps(neg_zero, dotv));
 
 	if (cos_theta > 0.9995f)
 	{
@@ -631,7 +658,7 @@ RGINLINE void rg_quat_slerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 		}
 #endif
 #ifdef RG_MATH_FAST_NORMALIZE
-		__m128 inv_len = _mm_rsqrt_ps(lenv);
+		__m128 inv_len = rg_math_rsqrt_ps(lenv);
 #else
 		__m128 inv_len = _mm_div_ps(_mm_set1_ps(1.0f), _mm_sqrt_ps(lenv));
 #endif
@@ -639,14 +666,9 @@ RGINLINE void rg_quat_slerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 		return;
 	}
 
-	f32 sin_theta_sq = 1.0f - cos_theta * cos_theta;
-	f32 inv_sin_theta = 1.0f / rg_sqrtf(sin_theta_sq);
-	f32 angle = rg_acosf(cos_theta);
-	f32 sin_t;
-	f32 cos_t;
-	rg_sincosf(t * angle, &sin_t, &cos_t);
-	f32 scale1 = sin_t * inv_sin_theta;
-	f32 scale0 = cos_t - cos_theta * scale1;
+	f32 scale0;
+	f32 scale1;
+	rg__quat_slerp_weights(cos_theta, t, &scale0, &scale1);
 	out->simd = RG_MATH_FMADD_PS(signed_bv, _mm_set1_ps(scale1), _mm_mul_ps(av, _mm_set1_ps(scale0)));
 #else
 	f32 ax = a->x;
@@ -684,6 +706,7 @@ RGINLINE void rg_quat_slerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 #endif
 #ifdef RG_MATH_FAST_NORMALIZE
 		f32 inv_len = rg_rsqrtf_fast(len_sq);
+		inv_len *= 1.5f - 0.5f * len_sq * inv_len * inv_len; // One Newton-Raphson step
 #else
 		f32 inv_len = rg_rsqrtf(len_sq);
 #endif
@@ -694,23 +717,16 @@ RGINLINE void rg_quat_slerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 		return;
 	}
 
-#if !RG_MATH_MAX_PERF
-	cos_theta = rg_clampf(cos_theta, -1.0f, 1.0f);
-#endif
 #if RG_MATH_MAX_PERF
-	f32 sin_theta_sq = 1.0f - cos_theta * cos_theta;
-	f32 inv_sin_theta = 1.0f / rg_sqrtf(sin_theta_sq);
-	f32 angle = rg_acosf(cos_theta);
-	f32 sin_t;
-	f32 cos_t;
-	rg_sincosf(t * angle, &sin_t, &cos_t);
-	f32 scale1 = sin_t * inv_sin_theta;
-	f32 scale0 = cos_t - cos_theta * scale1;
+	f32 scale0;
+	f32 scale1;
+	rg__quat_slerp_weights(cos_theta, t, &scale0, &scale1);
 	out->x = ax * scale0 + bx * scale1;
 	out->y = ay * scale0 + by * scale1;
 	out->z = az * scale0 + bz * scale1;
 	out->w = aw * scale0 + bw * scale1;
 #else
+	cos_theta = rg_clampf(cos_theta, -1.0f, 1.0f);
 	f32 angle = rg_acosf(cos_theta);
 	f32 w0 = rg_sinf((1.0f - t) * angle);
 	f32 w1 = rg_sinf(t * angle);
@@ -756,7 +772,7 @@ RGINLINE void rg_quat_slerp_fast(const rg_quat* a, const rg_quat* b, f32 t, rg_q
 		__m128 tv = _mm_set1_ps(t);
 		__m128 r = RG_MATH_FMADD_PS(_mm_sub_ps(signed_bv, av), tv, av);
 		__m128 lenv = rg_math_quat_dot4_ps(r, r);
-		out->simd = _mm_mul_ps(r, _mm_rsqrt_ps(lenv));
+		out->simd = _mm_mul_ps(r, rg_math_rsqrt_ps(lenv));
 		return;
 	}
 
@@ -858,7 +874,7 @@ RGINLINE void rg_quat_slerp_longest(const rg_quat* a, const rg_quat* b, f32 t, r
 
 	f32 angle = rg_acosf(cos_theta);
 	__m128 sin_sqv = _mm_set_ss(sin_theta_sq);
-	__m128 inv_sinv = _mm_rsqrt_ss(sin_sqv);
+	__m128 inv_sinv = rg_math_rsqrt_ss(sin_sqv);
 	inv_sinv = _mm_mul_ss(_mm_mul_ss(_mm_set_ss(0.5f), inv_sinv),
 	                      _mm_sub_ss(_mm_set_ss(3.0f), _mm_mul_ss(_mm_mul_ss(sin_sqv, inv_sinv), inv_sinv)));
 	f32 inv_sin_theta = _mm_cvtss_f32(inv_sinv);

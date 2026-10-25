@@ -81,6 +81,17 @@
 #error RG_HASH_MAX_LOAD_NUM / RG_HASH_MAX_LOAD_DEN must be between zero and one
 #endif
 
+// Table growth is the cold path of put/insert: keep it out of line so every
+// call site inlines only the probe loop. The macro stays defined because the
+// table-defining macros expand in user translation units.
+#if RG_COMPILER_MSVC
+#define RG_HASH_COLD static __declspec(noinline) __inline
+#elif RG_COMPILER_GCC || RG_COMPILER_CLANG
+#define RG_HASH_COLD static __attribute__((noinline, unused))
+#else
+#define RG_HASH_COLD static
+#endif
+
 // =============================================================================
 // PUBLIC API - Hash Functions
 // =============================================================================
@@ -219,13 +230,12 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 		map->count = 0; \
 		map->arena = NULL; \
 	} \
-	RGINLINE size_t rg_hash_map_find_index_##name(const name* map, name##_Key key) \
+	RGINLINE size_t rg_hash_map_find_index_hashed_##name(const name* map, name##_Key key, uint64_t hash) \
 	{ \
 		if (map->cap == 0) \
 		{ \
 			return RG_HASH_INVALID; \
 		} \
-		uint64_t hash = rg_hash_prepare(rg_hash_map_hash_##name(key)); \
 		size_t mask = map->cap - 1; \
 		size_t idx = (size_t)(hash & mask); \
 		size_t dist = 0; \
@@ -248,6 +258,15 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 			idx = (idx + 1) & mask; \
 			dist++; \
 		} \
+	} \
+	RGINLINE size_t rg_hash_map_find_index_##name(const name* map, name##_Key key) \
+	{ \
+		if (map->cap == 0) \
+		{ \
+			return RG_HASH_INVALID; \
+		} \
+		return rg_hash_map_find_index_hashed_##name( \
+		    map, key, rg_hash_prepare(rg_hash_map_hash_##name(key))); \
 	} \
 	RGINLINE name##_Value* rg_hash_map_get_ptr_##name(name* map, name##_Key key) \
 	{ \
@@ -293,7 +312,7 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 			dist++; \
 		} \
 	} \
-	RGINLINE int rg_hash_map_rehash_##name(name* map, size_t new_cap) \
+	RG_HASH_COLD int rg_hash_map_rehash_##name(name* map, size_t new_cap) \
 	{ \
 		name##_Entry* old_entries = map->entries; \
 		size_t old_cap = map->cap; \
@@ -341,14 +360,8 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 	RGINLINE int rg_hash_map_put_##name(name* map, name##_Key key, name##_Value value) \
 	{ \
 		RG_HASH_ASSERT(map->arena != NULL); \
-		if (map->cap == 0) \
-		{ \
-			if (!rg_hash_map_reserve_##name(map, 1)) \
-			{ \
-				return -1; \
-			} \
-		} \
-		size_t idx = rg_hash_map_find_index_##name(map, key); \
+		uint64_t hash = rg_hash_prepare(rg_hash_map_hash_##name(key)); \
+		size_t idx = rg_hash_map_find_index_hashed_##name(map, key, hash); \
 		if (idx != RG_HASH_INVALID) \
 		{ \
 			map->entries[idx].value = value; \
@@ -363,7 +376,7 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 			} \
 		} \
 		name##_Entry entry; \
-		entry.hash = rg_hash_prepare(rg_hash_map_hash_##name(key)); \
+		entry.hash = hash; \
 		entry.key = key; \
 		entry.value = value; \
 		rg_hash_map_insert_entry_##name(map, entry); \
@@ -441,13 +454,12 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 		set->count = 0; \
 		set->arena = NULL; \
 	} \
-	RGINLINE size_t rg_hash_set_find_index_##name(const name* set, name##_Key key) \
+	RGINLINE size_t rg_hash_set_find_index_hashed_##name(const name* set, name##_Key key, uint64_t hash) \
 	{ \
 		if (set->cap == 0) \
 		{ \
 			return RG_HASH_INVALID; \
 		} \
-		uint64_t hash = rg_hash_prepare(rg_hash_set_hash_##name(key)); \
 		size_t mask = set->cap - 1; \
 		size_t idx = (size_t)(hash & mask); \
 		size_t dist = 0; \
@@ -470,6 +482,15 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 			idx = (idx + 1) & mask; \
 			dist++; \
 		} \
+	} \
+	RGINLINE size_t rg_hash_set_find_index_##name(const name* set, name##_Key key) \
+	{ \
+		if (set->cap == 0) \
+		{ \
+			return RG_HASH_INVALID; \
+		} \
+		return rg_hash_set_find_index_hashed_##name( \
+		    set, key, rg_hash_prepare(rg_hash_set_hash_##name(key))); \
 	} \
 	RGINLINE int rg_hash_set_contains_##name(const name* set, name##_Key key) \
 	{ \
@@ -501,7 +522,7 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 			dist++; \
 		} \
 	} \
-	RGINLINE int rg_hash_set_rehash_##name(name* set, size_t new_cap) \
+	RG_HASH_COLD int rg_hash_set_rehash_##name(name* set, size_t new_cap) \
 	{ \
 		name##_Entry* old_entries = set->entries; \
 		size_t old_cap = set->cap; \
@@ -549,14 +570,8 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 	RGINLINE int rg_hash_set_insert_##name(name* set, name##_Key key) \
 	{ \
 		RG_HASH_ASSERT(set->arena != NULL); \
-		if (set->cap == 0) \
-		{ \
-			if (!rg_hash_set_reserve_##name(set, 1)) \
-			{ \
-				return -1; \
-			} \
-		} \
-		if (rg_hash_set_contains_##name(set, key)) \
+		uint64_t hash = rg_hash_prepare(rg_hash_set_hash_##name(key)); \
+		if (rg_hash_set_find_index_hashed_##name(set, key, hash) != RG_HASH_INVALID) \
 		{ \
 			return 0; \
 		} \
@@ -569,7 +584,7 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 			} \
 		} \
 		name##_Entry entry; \
-		entry.hash = rg_hash_prepare(rg_hash_set_hash_##name(key)); \
+		entry.hash = hash; \
 		entry.key = key; \
 		rg_hash_set_insert_entry_##name(set, entry); \
 		return 1; \

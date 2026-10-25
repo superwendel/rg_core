@@ -17,7 +17,11 @@ RgArena arena = rg_arena_create(MB(16));
 ```
 
 All generated functions are `static inline`, so the header works naturally in
-unity builds. Normal header guards also make repeated inclusion harmless.
+unity builds. Normal header guards also make repeated inclusion harmless. The
+one exception is table growth: each table's rehash function is generated as a
+`static` non-inlined (cold) function, so a `put` or `insert` call site inlines
+only the probe loop and shares the growth code with every other call site of
+that table type.
 
 ## Hash functions
 
@@ -141,6 +145,15 @@ exists, and `-1` for allocation failure.
 Updating an existing map key or inserting an existing set key does not allocate,
 including when the table is at its growth threshold. If allocation for a new key
 fails, existing entries remain unchanged.
+
+Every operation calls the hash function exactly once per key: `put` and
+`insert` reuse the hash computed for the lookup when they store a new entry,
+and growth reinserts entries from their stored hashes without rehashing keys.
+This matters for string and byte-buffer keys, where hashing dominates the
+operation. The generated `rg_hash_map_find_index_hashed_<name>(map, key, hash)`
+and `rg_hash_set_find_index_hashed_<name>(set, key, hash)` functions expose the
+same lookup for callers that already hold the prepared hash; the hash must be
+the table's hash function output passed through `rg_hash_prepare`.
 
 ## Arena ownership and pointer lifetime
 

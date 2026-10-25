@@ -176,3 +176,14 @@ recognizes selected complete formats such as `%s`, `%d`, and, in the ASM
 header, `%.6f` and `%08u`. Other formats use the general parser. The library
 does not recognize complete application messages. Benchmark simple complete
 formats, mixed messages, and bounded output separately when choosing a backend.
+
+In both headers, literal text between conversions is located with `strchr`
+and copied with one bulk write, so long literal runs cost about the same as a
+`memcpy`. `%e` and `%g` derive the decimal exponent from the binary exponent
+with a table-driven scale and a single correction step, so their cost does not
+grow with the magnitude of the exponent; a mantissa that rounds up to 10 at the
+requested precision is renormalized into the exponent, and both backends share
+this normalization so they produce the same digits. String precision (`%.*s`)
+is bounded with `memchr`, and the portable string length helper checks eight
+bytes inline before deferring to the platform `strlen` (the ASM backend uses
+its assembly helper).

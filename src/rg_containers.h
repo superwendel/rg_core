@@ -21,6 +21,7 @@
 //   #define RG_CONTAINERS_ASSERT(x)  - Custom assert macro
 //   #define RG_CONTAINERS_MIN_CAP    - Default minimum capacity (default: 8)
 //   #define RG_SPARSE_INVALID        - Missing dense index (default: SIZE_MAX)
+//   #define RG_SPARSE_INDEX_TYPE     - Sparse-array element type (default: size_t)
 //
 // NOTES:
 //   - Growth allocates new storage; old blocks remain until the arena is reset.
@@ -61,6 +62,20 @@
 #ifndef RG_SPARSE_INVALID
 #define RG_SPARSE_INVALID SIZE_MAX
 #endif
+
+// The sparse array stores one dense index per possible id, so its element type
+// sets the per-id footprint: uint32_t halves it against size_t and keeps more of
+// the array in cache during contains/remove. Must be an unsigned integer type;
+// dense counts are limited to its maximum value and RG_SPARSE_INVALID is
+// converted to it when stored (rg_sparse_set_index_of still returns
+// RG_SPARSE_INVALID unchanged).
+#ifndef RG_SPARSE_INDEX_TYPE
+#define RG_SPARSE_INDEX_TYPE size_t
+#endif
+
+typedef RG_SPARSE_INDEX_TYPE RgSparseIndex;
+
+#define RG_SPARSE_INDEX_MAX ((size_t)(RgSparseIndex)-1)
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -123,7 +138,7 @@
 		id_type* dense;                     \
 		size_t dense_count;                 \
 		size_t dense_cap;                   \
-		size_t* sparse;                     \
+		RgSparseIndex* sparse;              \
 		size_t sparse_cap;                  \
 		RgArena* arena;                     \
 	} name
@@ -771,7 +786,7 @@
 			{                                                                               \
 				size_t _rg_min_cap = _rg_max_id + 1;                                        \
 				size_t _rg_new_cap = rg_container_next_cap((set)->sparse_cap, _rg_min_cap); \
-				size_t* _rg_new_sparse = rg_container_grow_sparse(                          \
+				RgSparseIndex* _rg_new_sparse = rg_container_grow_sparse(                   \
 				    (set)->sparse,                                                          \
 				    (set)->sparse_cap,                                                      \
 				    _rg_new_cap,                                                            \
@@ -804,7 +819,7 @@
  * @return Dense index or RG_SPARSE_INVALID
  */
 #define rg_sparse_set_index_of(set, id) \
-	(rg_sparse_set_contains(set, id) ? (set)->sparse[(size_t)(id)] : RG_SPARSE_INVALID)
+	(rg_sparse_set_contains(set, id) ? (size_t)(set)->sparse[(size_t)(id)] : (size_t)RG_SPARSE_INVALID)
 
 /**
  * @brief Get dense array pointer
@@ -840,18 +855,22 @@
  * @param set Pointer to sparse set
  * @param id ID to insert
  */
-#define rg_sparse_set_insert(id_type, set, id)                                 \
-	do                                                                         \
-	{                                                                          \
-		size_t _rg_id = (size_t)(id);                                          \
-		rg_sparse_set_reserve_sparse(set, _rg_id);                             \
-		if (!rg_sparse_set_contains(set, id))                                  \
-		{                                                                      \
-			rg_sparse_set_reserve_dense(id_type, set, (set)->dense_count + 1); \
-			(set)->dense[(set)->dense_count] = (id);                           \
-			(set)->sparse[_rg_id] = (set)->dense_count;                        \
-			(set)->dense_count++;                                              \
-		}                                                                      \
+#define rg_sparse_set_insert(id_type, set, id)                                     \
+	do                                                                             \
+	{                                                                              \
+		size_t _rg_id = (size_t)(id);                                              \
+		rg_sparse_set_reserve_sparse(set, _rg_id);                                 \
+		if (!rg_sparse_set_contains(set, id))                                      \
+		{                                                                          \
+			RG_CONTAINERS_ASSERT((set)->dense_count < RG_SPARSE_INDEX_MAX);        \
+			if ((set)->dense_count < RG_SPARSE_INDEX_MAX)                          \
+			{                                                                      \
+				rg_sparse_set_reserve_dense(id_type, set, (set)->dense_count + 1); \
+				(set)->dense[(set)->dense_count] = (id);                           \
+				(set)->sparse[_rg_id] = (RgSparseIndex)(set)->dense_count;         \
+				(set)->dense_count++;                                              \
+			}                                                                      \
+		}                                                                          \
 	} while (0)
 
 /**
@@ -873,10 +892,11 @@
 				if (_rg_index != _rg_last)                                      \
 				{                                                               \
 					(set)->dense[_rg_index] = (set)->dense[_rg_last];           \
-					(set)->sparse[(size_t)(set)->dense[_rg_index]] = _rg_index; \
+					(set)->sparse[(size_t)(set)->dense[_rg_index]] =            \
+					    (RgSparseIndex)_rg_index;                               \
 				}                                                               \
 				(set)->dense_count = _rg_last;                                  \
-				(set)->sparse[_rg_id] = RG_SPARSE_INVALID;                      \
+				(set)->sparse[_rg_id] = (RgSparseIndex)RG_SPARSE_INVALID;       \
 			}                                                                   \
 		}                                                                       \
 	} while (0)
@@ -972,26 +992,26 @@ RG_CONTAINERS_COLD void* rg_container_grow(void* data,
 	return new_data;
 }
 
-RG_CONTAINERS_COLD size_t* rg_container_grow_sparse(const size_t* sparse,
-                                                    size_t old_cap,
-                                                    size_t new_cap,
-                                                    RgArena* arena)
+RG_CONTAINERS_COLD RgSparseIndex* rg_container_grow_sparse(const RgSparseIndex* sparse,
+                                                           size_t old_cap,
+                                                           size_t new_cap,
+                                                           RgArena* arena)
 {
 	RG_CONTAINERS_ASSERT(new_cap >= old_cap);
-	RG_CONTAINERS_ASSERT(new_cap <= SIZE_MAX / sizeof(size_t));
-	if (new_cap <= old_cap || new_cap > SIZE_MAX / sizeof(size_t))
+	RG_CONTAINERS_ASSERT(new_cap <= SIZE_MAX / sizeof(RgSparseIndex));
+	if (new_cap <= old_cap || new_cap > SIZE_MAX / sizeof(RgSparseIndex))
 		return NULL;
 
-	size_t* new_sparse = (size_t*)rg_container_alloc_array(
-	    arena, new_cap, sizeof(size_t), RG_ALIGNOF(size_t));
+	RgSparseIndex* new_sparse = (RgSparseIndex*)rg_container_alloc_array(
+	    arena, new_cap, sizeof(RgSparseIndex), RG_ALIGNOF(RgSparseIndex));
 	if (new_sparse == NULL)
 		return NULL;
 
 	if (sparse != NULL && old_cap > 0)
-		memcpy(new_sparse, sparse, old_cap * sizeof(size_t));
+		memcpy(new_sparse, sparse, old_cap * sizeof(RgSparseIndex));
 
 	for (size_t i = old_cap; i < new_cap; i++)
-		new_sparse[i] = RG_SPARSE_INVALID;
+		new_sparse[i] = (RgSparseIndex)RG_SPARSE_INVALID;
 
 	return new_sparse;
 }

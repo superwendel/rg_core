@@ -33,6 +33,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #if !defined(RG_RANDOM_FORCE_PORTABLE_MUL128)
 #if RG_COMPILER_MSVC && RG_ARCH_X64
@@ -526,18 +527,66 @@ RGINLINE int rg_random_sign(RgRng* rng)
 	return rg_random_bool(rng) ? 1 : -1;
 }
 
-// Internal shuffle sampler. Keep the eager threshold here to retain the compact
-// inlined swap loop; public bounded sampling uses the division-skipping path.
-// Shuffle supplies a nonzero bound and consumes the same u64 sequence either way.
-RGINLINE u64 rg_random_shuffle_index(RgRng* rng, u64 bound)
+// Swap two elements. Common strides get fixed-size copies so the compiler
+// emits plain register moves; other strides fall back to 8-byte chunks.
+RGINLINE void rg_random_swap_elements(u8* a, u8* b, size_t stride)
 {
-	u64 threshold = (u64)(0ULL - bound) % bound;
-	for (;;)
+	switch (stride)
 	{
-		u64 low;
-		u64 high = rg_random_mul_u64_wide(rg_rng_next_u64(rng), bound, &low);
-		if (low >= threshold)
-			return high;
+	case 4:
+	{
+		u32 ta, tb;
+		memcpy(&ta, a, 4);
+		memcpy(&tb, b, 4);
+		memcpy(a, &tb, 4);
+		memcpy(b, &ta, 4);
+		return;
+	}
+	case 8:
+	{
+		u64 ta, tb;
+		memcpy(&ta, a, 8);
+		memcpy(&tb, b, 8);
+		memcpy(a, &tb, 8);
+		memcpy(b, &ta, 8);
+		return;
+	}
+	case 16:
+	{
+		u8 tmp[16];
+		memcpy(tmp, a, 16);
+		memcpy(a, b, 16);
+		memcpy(b, tmp, 16);
+		return;
+	}
+	case 32:
+	{
+		u8 tmp[32];
+		memcpy(tmp, a, 32);
+		memcpy(a, b, 32);
+		memcpy(b, tmp, 32);
+		return;
+	}
+	default:
+		break;
+	}
+	while (stride >= 8)
+	{
+		u64 ta, tb;
+		memcpy(&ta, a, 8);
+		memcpy(&tb, b, 8);
+		memcpy(a, &tb, 8);
+		memcpy(b, &ta, 8);
+		a += 8;
+		b += 8;
+		stride -= 8;
+	}
+	while (stride > 0)
+	{
+		u8 tmp = *a;
+		*a++ = *b;
+		*b++ = tmp;
+		stride--;
 	}
 }
 
@@ -557,19 +606,14 @@ RGINLINE void rg_random_shuffle(void* data, size_t count, size_t stride, RgRng* 
 	u8* base = (u8*)data;
 	for (size_t i = count - 1; i > 0; i--)
 	{
-		size_t j = (size_t)rg_random_shuffle_index(rng, (u64)i + 1ULL);
-		if (i == j)
+		// rg_random_bounded_u64 draws the same u64 and accepts or rejects it
+		// exactly as the eager-threshold form did, so the shuffle sequence is
+		// unchanged; the modulo only runs when low < bound (probability
+		// bound / 2^64) instead of once per element.
+		size_t j = (size_t)rg_random_bounded_u64(rng, (u64)i + 1ULL);
+		if (i != j)
 		{
-			continue;
-		}
-
-		u8* a = base + i * stride;
-		u8* b = base + j * stride;
-		for (size_t k = 0; k < stride; k++)
-		{
-			u8 tmp = a[k];
-			a[k] = b[k];
-			b[k] = tmp;
+			rg_random_swap_elements(base + i * stride, base + j * stride, stride);
 		}
 	}
 }

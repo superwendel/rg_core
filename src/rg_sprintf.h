@@ -802,9 +802,83 @@ RGINLINE char* rg_dtoa(double value, char* buf, int precision)
 	return p;
 }
 
+// Powers of ten in steps of 10^16. A product with rg_pow10_pos covers every
+// decimal exponent a double can take.
+static const double rg_pow10_coarse[20] = {
+    1e0, 1e16, 1e32, 1e48, 1e64, 1e80, 1e96, 1e112, 1e128, 1e144,
+    1e160, 1e176, 1e192, 1e208, 1e224, 1e240, 1e256, 1e272, 1e288, 1e304};
+
+// Scale a positive finite value into [1, 10) and return its decimal exponent.
+// Values in [2^-20, 128), roughly [1e-6, 128), keep the short multiply/divide
+// loop, which is cheaper there and matches the previous rounding exactly.
+// Elsewhere the binary exponent predicts the decimal exponent
+// (floor(exp2 * log10(2)) is within one of the result for every exp2 in
+// [-1022, 1023]), so one table-driven scale and at most one correction step
+// replace a loop that is linear in the exponent.
+RGINLINE int rg_sprintf_normalize_decimal(double* value)
+{
+	rg_double_bits bits;
+	double val = *value;
+	int exp10 = 0;
+	bits.d = val;
+	int exp2 = (int)((bits.u >> 52) & 0x7FF) - 1023;
+	if (exp2 >= -20 && exp2 < 7)
+	{
+		while (val >= 10.0)
+		{
+			val /= 10.0;
+			exp10++;
+		}
+		while (val < 1.0)
+		{
+			val *= 10.0;
+			exp10--;
+		}
+		*value = val;
+		return exp10;
+	}
+	if (exp2 == -1023)
+	{
+		// Subnormal: bring it into the normal range before estimating.
+		val *= 1e300;
+		exp10 = -300;
+		bits.d = val;
+		exp2 = (int)((bits.u >> 52) & 0x7FF) - 1023;
+	}
+	int estimate = (((exp2 + 4096) * 1233) >> 12) - 1233; // floor(exp2 * log10(2))
+	int magnitude = estimate < 0 ? -estimate : estimate;
+	double scale = rg_pow10_pos[magnitude & 15] * rg_pow10_coarse[magnitude >> 4];
+	val = estimate < 0 ? val * scale : val / scale;
+	while (val >= 10.0)
+	{
+		val /= 10.0;
+		estimate++;
+	}
+	while (val < 1.0)
+	{
+		val *= 10.0;
+		estimate--;
+	}
+	*value = val;
+	return exp10 + estimate;
+}
+
 RGINLINE char* rg_ftoa(float value, char* buf, int precision)
 {
 	return rg_dtoa((double)value, buf, precision);
+}
+
+// rg_dtoa rounds a mantissa just below 10 up to "10.000"; fold that carry
+// into the exponent so the mantissa keeps a single integer digit.
+RGINLINE char* rg_sprintf_fix_mantissa_carry(char* begin, char* end, int* exp10)
+{
+	if (begin[1] != '.' && begin[1] != '\0')
+	{
+		memmove(begin + 1, begin + 2, (size_t)(end - begin - 2));
+		end--;
+		*exp10 += 1;
+	}
+	return end;
 }
 
 RGINLINE char* rg_trim_float_zeros(char* begin, char* end)
@@ -882,50 +956,28 @@ RGINLINE void rg_flush(rg_sprintf_ctx* ctx)
 	}
 }
 
-// Check short strings byte by byte without requiring readable padding.
-// After 64 nonzero bytes, let the platform strlen scan the remaining tail.
+// Check the first eight bytes individually, which covers most identifiers and
+// labels without a call; longer strings go to the platform strlen, which
+// streams the rest with wide loads.
 RGINLINE size_t rg_strlen(const char* s)
 {
-	const char* p = s;
-	for (;;)
-	{
-		if (p[0] == '\0') return (size_t)(p - s) + 0;
-		if (p[1] == '\0') return (size_t)(p - s) + 1;
-		if (p[2] == '\0') return (size_t)(p - s) + 2;
-		if (p[3] == '\0') return (size_t)(p - s) + 3;
-		if (p[4] == '\0') return (size_t)(p - s) + 4;
-		if (p[5] == '\0') return (size_t)(p - s) + 5;
-		if (p[6] == '\0') return (size_t)(p - s) + 6;
-		if (p[7] == '\0') return (size_t)(p - s) + 7;
-		p += 8;
-		if (p - s == 64) return 64 + strlen(p);
-	}
+	if (s[0] == '\0') return 0;
+	if (s[1] == '\0') return 1;
+	if (s[2] == '\0') return 2;
+	if (s[3] == '\0') return 3;
+	if (s[4] == '\0') return 4;
+	if (s[5] == '\0') return 5;
+	if (s[6] == '\0') return 6;
+	if (s[7] == '\0') return 7;
+	return 8 + strlen(s + 8);
 }
 
-// Keep bounded scanning out of the main formatter's register allocation.
-// Sequential byte checks stop at the terminator without requiring padded input.
-static RG_NOINLINE size_t rg_sprintf_bounded_len(const char* s, size_t remaining)
+// Length of a string slice: at most `limit` bytes are examined, and the scan
+// stops at the first null (C11 7.24.5.1), so unterminated slices are safe.
+RGINLINE size_t rg_sprintf_bounded_len(const char* s, size_t limit)
 {
-	const char* start = s;
-	while (remaining >= 8)
-	{
-		if (s[0] == '\0') return (size_t)(s - start);
-		if (s[1] == '\0') return (size_t)(s - start) + 1;
-		if (s[2] == '\0') return (size_t)(s - start) + 2;
-		if (s[3] == '\0') return (size_t)(s - start) + 3;
-		if (s[4] == '\0') return (size_t)(s - start) + 4;
-		if (s[5] == '\0') return (size_t)(s - start) + 5;
-		if (s[6] == '\0') return (size_t)(s - start) + 6;
-		if (s[7] == '\0') return (size_t)(s - start) + 7;
-		s += 8;
-		remaining -= 8;
-	}
-	while (remaining > 0 && *s != '\0')
-	{
-		s++;
-		remaining--;
-	}
-	return (size_t)(s - start);
+	const char* nul = (const char*)memchr(s, '\0', limit);
+	return nul ? (size_t)(nul - s) : limit;
 }
 
 // Output a single character
@@ -1266,7 +1318,17 @@ static int rg_vsnprintf_internal(rg_sprintf_ctx* ctx, const char* fmt, va_list a
 	{
 		if (*fmt != '%')
 		{
-			rg_putc(ctx, *fmt++);
+			const char* run = fmt;
+			do
+			{
+				fmt++;
+			} while (*fmt != '\0' && *fmt != '%' && fmt - run < 8);
+			if (*fmt != '\0' && *fmt != '%')
+			{
+				const char* pct = strchr(fmt, '%');
+				fmt = pct ? pct : fmt + strlen(fmt);
+			}
+			rg_puts(ctx, run, (size_t)(fmt - run));
 			continue;
 		}
 
@@ -1851,21 +1913,13 @@ static int rg_vsnprintf_internal(rg_sprintf_ctx* ctx, const char* fmt, va_list a
 				if (val != 0.0)
 				{
 					// Normalize to 1.xxx
-					while (val >= 10.0)
-					{
-						val /= 10.0;
-						exp_val++;
-					}
-					while (val < 1.0 && val > 0)
-					{
-						val *= 10.0;
-						exp_val--;
-					}
+					exp_val = rg_sprintf_normalize_decimal(&val);
 				}
 
 				// Write mantissa
 				char* p = num_buf;
 				p = rg_dtoa(val, p, precision);
+				p = rg_sprintf_fix_mantissa_carry(num_buf, p, &exp_val);
 
 				// Write exponent
 				*p++ = (fmt[-1] == 'E') ? 'E' : 'e';
@@ -1919,16 +1973,7 @@ static int rg_vsnprintf_internal(rg_sprintf_ctx* ctx, const char* fmt, va_list a
 
 				if (abs_val != 0.0)
 				{
-					while (norm >= 10.0)
-					{
-						norm /= 10.0;
-						exp_val++;
-					}
-					while (norm < 1.0 && norm > 0)
-					{
-						norm *= 10.0;
-						exp_val--;
-					}
+					exp_val = rg_sprintf_normalize_decimal(&norm);
 					if (exp_val < -4 || exp_val >= precision) use_exp = 1;
 				}
 
@@ -1938,6 +1983,7 @@ static int rg_vsnprintf_internal(rg_sprintf_ctx* ctx, const char* fmt, va_list a
 					int exp_out = exp_val;
 
 					p = rg_dtoa(norm, p, precision - 1);
+					p = rg_sprintf_fix_mantissa_carry(num_buf, p, &exp_out);
 					*p++ = (fmt[-1] == 'G') ? 'E' : 'e';
 					*p++ = (exp_out >= 0) ? '+' : '-';
 					if (exp_out < 0) exp_out = -exp_out;

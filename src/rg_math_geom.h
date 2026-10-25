@@ -113,6 +113,35 @@ typedef struct rg_frustum
 	rg_plane planes[RG_FRUSTUM_PLANE_COUNT];
 } rg_frustum;
 
+#define RG_FRUSTUM_SOA_LANES 8
+
+/**
+ * @brief Frustum planes in structure-of-arrays form for SIMD culling
+ *
+ * The six planes are padded to eight lanes; the padding lanes never reject.
+ * Build with rg_frustum_soa_from_frustum. 32-byte aligned for AVX loads.
+ */
+typedef RG_ALIGN32 struct rg_frustum_soa
+{
+	f32 nx[RG_FRUSTUM_SOA_LANES];
+	f32 ny[RG_FRUSTUM_SOA_LANES];
+	f32 nz[RG_FRUSTUM_SOA_LANES];
+	f32 d[RG_FRUSTUM_SOA_LANES];
+	u32 sel_x[RG_FRUSTUM_SOA_LANES]; // All bits set where normal >= 0: pick max, else min
+	u32 sel_y[RG_FRUSTUM_SOA_LANES];
+	u32 sel_z[RG_FRUSTUM_SOA_LANES];
+} rg_frustum_soa;
+
+/**
+ * @brief Ray with a precomputed reciprocal direction for repeated AABB tests
+ */
+typedef struct rg_ray_inv
+{
+	rg_vec3 origin;
+	rg_vec3 dir;
+	rg_vec3 inv_dir; // 1 / dir per component, |dir| clamped away from zero
+} rg_ray_inv;
+
 // =============================================================================
 // RAY HELPERS
 // =============================================================================
@@ -132,6 +161,13 @@ RGINLINE void rg_ray_set(rg_ray* ray, const rg_vec3* origin, const rg_vec3* dir)
  * @param out Output point
  */
 RGINLINE void rg_ray_at(const rg_ray* ray, f32 t, rg_vec3* out);
+
+/**
+ * @brief Precompute a ray's reciprocal direction for rg_ray_inv_aabb
+ * @param out Output ray
+ * @param ray Source ray
+ */
+RGINLINE void rg_ray_inv_make(rg_ray_inv* out, const rg_ray* ray);
 
 // =============================================================================
 // LINE HELPERS
@@ -540,6 +576,57 @@ RGINLINE void rg_frustum_from_mat4_zo(const rg_mat4* m, rg_frustum* out);
 RGINLINE int rg_aabb_in_frustum(const rg_aabb* aabb, const rg_frustum* frustum);
 
 /**
+ * @brief Sphere frustum culling test
+ * @param sphere Sphere
+ * @param frustum Frustum planes (normalized)
+ * @return 1 if intersecting/inside, 0 if outside
+ */
+RGINLINE int rg_sphere_in_frustum(const rg_sphere* sphere, const rg_frustum* frustum);
+
+/**
+ * @brief Convert frustum planes to the structure-of-arrays layout
+ * @param frustum Frustum planes
+ * @param out Output SoA frustum
+ */
+RGINLINE void rg_frustum_soa_from_frustum(const rg_frustum* frustum, rg_frustum_soa* out);
+
+/**
+ * @brief AABB frustum culling test against an SoA frustum
+ * @param aabb AABB
+ * @param frustum SoA frustum
+ * @return 1 if intersecting/inside, 0 if outside (same result as rg_aabb_in_frustum)
+ */
+RGINLINE int rg_aabb_in_frustum_soa(const rg_aabb* aabb, const rg_frustum_soa* frustum);
+
+/**
+ * @brief Sphere frustum culling test against an SoA frustum
+ * @param sphere Sphere
+ * @param frustum SoA frustum
+ * @return 1 if intersecting/inside, 0 if outside (same result as rg_sphere_in_frustum)
+ */
+RGINLINE int rg_sphere_in_frustum_soa(const rg_sphere* sphere, const rg_frustum_soa* frustum);
+
+/**
+ * @brief Frustum-cull an array of AABBs
+ * @param frustum SoA frustum
+ * @param boxes Input AABBs
+ * @param count Number of AABBs (any value, including 0)
+ * @param out Output flags, one byte per AABB: 1 if intersecting/inside, 0 if outside
+ * @return Number of AABBs flagged 1
+ */
+RGINLINE size_t rg_frustum_cull_aabbs(const rg_frustum_soa* frustum, const rg_aabb* RG_MATH_RESTRICT boxes, size_t count, u8* RG_MATH_RESTRICT out);
+
+/**
+ * @brief Frustum-cull an array of spheres
+ * @param frustum SoA frustum
+ * @param spheres Input spheres
+ * @param count Number of spheres (any value, including 0)
+ * @param out Output flags, one byte per sphere: 1 if intersecting/inside, 0 if outside
+ * @return Number of spheres flagged 1
+ */
+RGINLINE size_t rg_frustum_cull_spheres(const rg_frustum_soa* frustum, const rg_sphere* RG_MATH_RESTRICT spheres, size_t count, u8* RG_MATH_RESTRICT out);
+
+/**
  * @brief Extract frustum corners from inverse view-projection (clipspace control)
  * @param inv_mat Inverse view-projection (or inverse projection)
  * @param out Output corners (RG_FRUSTUM_CORNER_*)
@@ -700,11 +787,32 @@ RGINLINE int rg_line_sphere(const rg_vec3* p0, const rg_vec3* p1, const rg_spher
  * @brief Ray-AABB intersection (slab method)
  * @param ray Ray
  * @param aabb AABB
- * @param tmin Near hit distance (optional)
- * @param tmax Far hit distance (optional)
- * @return 1 if intersects, 0 otherwise
+ * @param tmin Near hit distance (optional); written whenever the slab intervals overlap, even when the box is behind the origin
+ * @param tmax Far hit distance (optional); written together with tmin
+ * @return 1 if intersects (the far distance is >= 0), 0 otherwise
  */
 RGINLINE int rg_ray_aabb(const rg_ray* ray, const rg_aabb* aabb, f32* tmin, f32* tmax);
+
+/**
+ * @brief Ray-AABB intersection with a precomputed reciprocal direction (slab method)
+ * @param ray Ray from rg_ray_inv_make
+ * @param aabb AABB
+ * @param tmin Near distance (optional); always written, also on a miss
+ * @param tmax Far distance (optional); always written, also on a miss
+ * @return 1 if intersects, 0 otherwise (same result as rg_ray_aabb)
+ */
+RGINLINE int rg_ray_inv_aabb(const rg_ray_inv* ray, const rg_aabb* aabb, f32* tmin, f32* tmax);
+
+/**
+ * @brief Ray-AABB intersection against an array of AABBs
+ * @param ray Ray from rg_ray_inv_make
+ * @param boxes Input AABBs
+ * @param count Number of AABBs (any value, including 0)
+ * @param tmins Output near distance per AABB, written for hits and misses (optional)
+ * @param out Output flags, one byte per AABB: 1 if intersects, 0 otherwise
+ * @return Number of AABBs hit
+ */
+RGINLINE size_t rg_ray_inv_aabbs(const rg_ray_inv* ray, const rg_aabb* RG_MATH_RESTRICT boxes, size_t count, f32* RG_MATH_RESTRICT tmins, u8* RG_MATH_RESTRICT out);
 
 /**
  * @brief AABB-plane classification
@@ -761,6 +869,50 @@ RGINLINE void rg_ray_at(const rg_ray* ray, f32 t, rg_vec3* out)
 	out->z = ray->origin.z + ray->dir.z * t;
 #if !RG_MATH_MAX_PERF
 	out->_pad = 0.0f;
+#endif
+}
+
+// Smallest |direction component| used by the slab tests. Clamping to it turns
+// a parallel slab into +-huge distances instead of NaN from 0 * inf.
+#define RG_RAY_DIR_MIN 1e-30f
+
+#ifdef RG_MATH_SSE
+RGINLINE __m128 rg__ray_inv_dir_ps(__m128 dir)
+{
+	const __m128 neg_zero = _mm_set1_ps(-0.0f);
+	__m128 sign = _mm_and_ps(dir, neg_zero);
+	__m128 mag = _mm_max_ps(_mm_andnot_ps(neg_zero, dir), _mm_set1_ps(RG_RAY_DIR_MIN));
+	return _mm_div_ps(_mm_set1_ps(1.0f), _mm_or_ps(mag, sign));
+}
+#else
+RGINLINE f32 rg__ray_inv_dir_component(f32 d)
+{
+	// Same clamp as the SSE path, sign preserved (also for -0.0).
+	rg_float_bits bits;
+	rg_float_bits floor_bits;
+	bits.f = d;
+	floor_bits.f = RG_RAY_DIR_MIN;
+	if ((bits.u & 0x7FFFFFFFu) < floor_bits.u)
+	{
+		bits.u = (bits.u & 0x80000000u) | floor_bits.u;
+	}
+	return 1.0f / bits.f;
+}
+#endif
+
+RGINLINE void rg_ray_inv_make(rg_ray_inv* out, const rg_ray* ray)
+{
+	out->origin = ray->origin;
+	out->dir = ray->dir;
+#ifdef RG_MATH_SSE
+	RG_VEC3_STORE(&out->inv_dir, rg__ray_inv_dir_ps(RG_VEC3_LOAD(&ray->dir)));
+#else
+	out->inv_dir.x = rg__ray_inv_dir_component(ray->dir.x);
+	out->inv_dir.y = rg__ray_inv_dir_component(ray->dir.y);
+	out->inv_dir.z = rg__ray_inv_dir_component(ray->dir.z);
+#endif
+#if !RG_MATH_MAX_PERF
+	out->inv_dir._pad = 0.0f;
 #endif
 }
 
@@ -943,6 +1095,26 @@ RGINLINE void rg_aabb_crop_until(const rg_aabb* aabb, const rg_aabb* crop, const
 
 RGINLINE void rg_aabb_transform(const rg_aabb* aabb, const rg_mat4* m, rg_aabb* out)
 {
+#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+	// Column form: center' = M * center, extent' = |M| * extent.
+	__m128 mn = RG_VEC3_LOAD(&aabb->min);
+	__m128 mx = RG_VEC3_LOAD(&aabb->max);
+	__m128 c = _mm_mul_ps(_mm_add_ps(mn, mx), _mm_set1_ps(0.5f));
+	__m128 e = _mm_sub_ps(mx, c);
+	__m128 c0 = _mm_load_ps(&m->m[0]);
+	__m128 c1 = _mm_load_ps(&m->m[4]);
+	__m128 c2 = _mm_load_ps(&m->m[8]);
+	__m128 o = _mm_load_ps(&m->m[12]);
+	o = RG_MATH_FMADD_PS(c0, _mm_shuffle_ps(c, c, _MM_SHUFFLE(0, 0, 0, 0)), o);
+	o = RG_MATH_FMADD_PS(c1, _mm_shuffle_ps(c, c, _MM_SHUFFLE(1, 1, 1, 1)), o);
+	o = RG_MATH_FMADD_PS(c2, _mm_shuffle_ps(c, c, _MM_SHUFFLE(2, 2, 2, 2)), o);
+	__m128 abs_mask = _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF));
+	__m128 r = _mm_mul_ps(_mm_and_ps(c0, abs_mask), _mm_shuffle_ps(e, e, _MM_SHUFFLE(0, 0, 0, 0)));
+	r = RG_MATH_FMADD_PS(_mm_and_ps(c1, abs_mask), _mm_shuffle_ps(e, e, _MM_SHUFFLE(1, 1, 1, 1)), r);
+	r = RG_MATH_FMADD_PS(_mm_and_ps(c2, abs_mask), _mm_shuffle_ps(e, e, _MM_SHUFFLE(2, 2, 2, 2)), r);
+	RG_VEC3_STORE(&out->min, _mm_sub_ps(o, r));
+	RG_VEC3_STORE(&out->max, _mm_add_ps(o, r));
+#else
 	f32 cx = (aabb->min.x + aabb->max.x) * 0.5f;
 	f32 cy = (aabb->min.y + aabb->max.y) * 0.5f;
 	f32 cz = (aabb->min.z + aabb->max.z) * 0.5f;
@@ -965,6 +1137,7 @@ RGINLINE void rg_aabb_transform(const rg_aabb* aabb, const rg_mat4* m, rg_aabb* 
 	out->max.x = ox + rx;
 	out->max.y = oy + ry;
 	out->max.z = oz + rz;
+#endif
 }
 
 RGINLINE void rg_aabb_invalidate(rg_aabb* aabb)
@@ -998,9 +1171,10 @@ RGINLINE void rg_aabb_size(const rg_aabb* aabb, rg_vec3* out)
 
 RGINLINE f32 rg_aabb_radius(const rg_aabb* aabb)
 {
-#if defined(RG_MATH_SSE41)
+#ifdef RG_MATH_SSE
 	__m128 d = _mm_sub_ps(RG_VEC3_LOAD(&aabb->max), RG_VEC3_LOAD(&aabb->min));
-	__m128 len_sq = _mm_dp_ps(d, d, 0x71);
+	__m128 sq = _mm_mul_ps(d, d);
+	__m128 len_sq = _mm_add_ss(_mm_add_ss(sq, _mm_shuffle_ps(sq, sq, _MM_SHUFFLE(1, 1, 1, 1))), _mm_shuffle_ps(sq, sq, _MM_SHUFFLE(2, 2, 2, 2)));
 	return _mm_cvtss_f32(_mm_mul_ss(_mm_sqrt_ss(len_sq), _mm_set_ss(0.5f)));
 #else
 	f32 dx = aabb->max.x - aabb->min.x;
@@ -1415,6 +1589,7 @@ RGINLINE void rg__frustum_from_mat4(const rg_mat4* m, rg_frustum* out, int zero_
 			planes[(index)].normal.z = nz * inv_len;     \
 			planes[(index)].d = nd * inv_len;            \
 		}                                                \
+		planes[(index)].normal._pad = 0.0f;              \
 	} while (0)
 
 	RG_FRUSTUM_SET_NORMALIZED(RG_FRUSTUM_LEFT, a[3] + a[0], a[7] + a[4], a[11] + a[8], a[15] + a[12]);
@@ -1456,6 +1631,10 @@ RGINLINE void rg_frustum_from_mat4(const rg_mat4* m, rg_frustum* out)
 
 RGINLINE int rg_aabb_in_frustum(const rg_aabb* aabb, const rg_frustum* frustum)
 {
+	// Branch-free p-vertex form: per plane the corner selected by the normal's
+	// signs is the most positive one, so the box is outside when n.p + d < 0.
+	// Selecting corners (rather than a center/extent form) keeps the test exact
+	// for boxes whose extent would round away at large coordinates.
 	const f32 minx = aabb->min.x;
 	const f32 miny = aabb->min.y;
 	const f32 minz = aabb->min.z;
@@ -1464,19 +1643,270 @@ RGINLINE int rg_aabb_in_frustum(const rg_aabb* aabb, const rg_frustum* frustum)
 	const f32 maxz = aabb->max.z;
 
 	const rg_plane* plane = frustum->planes;
+	int outside = 0;
 	for (int i = 0; i < RG_FRUSTUM_PLANE_COUNT; i++, plane++)
 	{
 		const f32 nx = plane->normal.x;
 		const f32 ny = plane->normal.y;
 		const f32 nz = plane->normal.z;
-		const f32 dp = nx * (nx > 0.0f ? maxx : minx) + ny * (ny > 0.0f ? maxy : miny) + nz * (nz > 0.0f ? maxz : minz) + plane->d;
-		if (RG_UNLIKELY(dp < 0.0f))
-		{
-			return 0;
-		}
+		const f32 dist = plane->d + nx * (nx >= 0.0f ? maxx : minx) + ny * (ny >= 0.0f ? maxy : miny) + nz * (nz >= 0.0f ? maxz : minz);
+		outside |= (dist < 0.0f);
 	}
 
-	return 1;
+	return !outside;
+}
+
+RGINLINE int rg_sphere_in_frustum(const rg_sphere* sphere, const rg_frustum* frustum)
+{
+	const f32 cx = sphere->center.x;
+	const f32 cy = sphere->center.y;
+	const f32 cz = sphere->center.z;
+	const f32 radius = sphere->radius;
+
+	const rg_plane* plane = frustum->planes;
+	int outside = 0;
+	for (int i = 0; i < RG_FRUSTUM_PLANE_COUNT; i++, plane++)
+	{
+		f32 dist = plane->d + radius;
+		dist += plane->normal.x * cx;
+		dist += plane->normal.y * cy;
+		dist += plane->normal.z * cz;
+		outside |= (dist < 0.0f);
+	}
+
+	return !outside;
+}
+
+RGINLINE void rg_frustum_soa_from_frustum(const rg_frustum* frustum, rg_frustum_soa* out)
+{
+	for (int i = 0; i < RG_FRUSTUM_SOA_LANES; i++)
+	{
+		f32 nx = 0.0f;
+		f32 ny = 0.0f;
+		f32 nz = 0.0f;
+		f32 d = FLT_MAX; // Padding lanes never reject.
+		if (i < RG_FRUSTUM_PLANE_COUNT)
+		{
+			const rg_plane* plane = &frustum->planes[i];
+			nx = plane->normal.x;
+			ny = plane->normal.y;
+			nz = plane->normal.z;
+			d = plane->d;
+		}
+		out->nx[i] = nx;
+		out->ny[i] = ny;
+		out->nz[i] = nz;
+		out->d[i] = d;
+		out->sel_x[i] = nx >= 0.0f ? 0xFFFFFFFFu : 0u;
+		out->sel_y[i] = ny >= 0.0f ? 0xFFFFFFFFu : 0u;
+		out->sel_z[i] = nz >= 0.0f ? 0xFFFFFFFFu : 0u;
+	}
+}
+
+// The SoA tests below accumulate d + n.x*px + n.y*py + n.z*pz in the same
+// order on every path, where p is the corner selected by the normal's signs,
+// so the batched and single-object variants give identical results.
+#if defined(RG_MATH_AVX)
+// Broadcast lane 0, 1 and 2 of a vec3 register across 8 lanes each.
+RGINLINE void rg__frustum_soa_broadcast3(__m128 v, __m256* x, __m256* y, __m256* z)
+{
+	__m256 vv = _mm256_insertf128_ps(_mm256_castps128_ps256(v), v, 1);
+	*x = _mm256_permute_ps(vv, _MM_SHUFFLE(0, 0, 0, 0));
+	*y = _mm256_permute_ps(vv, _MM_SHUFFLE(1, 1, 1, 1));
+	*z = _mm256_permute_ps(vv, _MM_SHUFFLE(2, 2, 2, 2));
+}
+
+RGINLINE __m256 rg__frustum_soa_fmadd(__m256 a, __m256 b, __m256 c)
+{
+#ifdef RG_MATH_FMA
+	return _mm256_fmadd_ps(a, b, c);
+#else
+	return _mm256_add_ps(_mm256_mul_ps(a, b), c);
+#endif
+}
+
+// Plane distances of a (min, max) box against all 8 lanes.
+RGINLINE __m256 rg__frustum_soa_aabb_dist(const rg_frustum_soa* f, __m256 mnx, __m256 mny, __m256 mnz, __m256 mxx, __m256 mxy, __m256 mxz)
+{
+	__m256 px = _mm256_blendv_ps(mnx, mxx, _mm256_load_ps((const f32*)f->sel_x));
+	__m256 py = _mm256_blendv_ps(mny, mxy, _mm256_load_ps((const f32*)f->sel_y));
+	__m256 pz = _mm256_blendv_ps(mnz, mxz, _mm256_load_ps((const f32*)f->sel_z));
+	__m256 dist = _mm256_load_ps(f->d);
+	dist = rg__frustum_soa_fmadd(_mm256_load_ps(f->nx), px, dist);
+	dist = rg__frustum_soa_fmadd(_mm256_load_ps(f->ny), py, dist);
+	dist = rg__frustum_soa_fmadd(_mm256_load_ps(f->nz), pz, dist);
+	return dist;
+}
+#endif
+
+#ifdef RG_MATH_SSE
+// SSE2 select: mask ? b : a.
+RGINLINE __m128 rg__frustum_soa_select(__m128 a, __m128 b, __m128 mask)
+{
+	return _mm_or_ps(_mm_andnot_ps(mask, a), _mm_and_ps(mask, b));
+}
+#endif
+
+RGINLINE int rg_aabb_in_frustum_soa(const rg_aabb* aabb, const rg_frustum_soa* frustum)
+{
+#if defined(RG_MATH_AVX)
+	__m256 mnx, mny, mnz, mxx, mxy, mxz;
+	rg__frustum_soa_broadcast3(RG_VEC3_LOAD(&aabb->min), &mnx, &mny, &mnz);
+	rg__frustum_soa_broadcast3(RG_VEC3_LOAD(&aabb->max), &mxx, &mxy, &mxz);
+	__m256 dist = rg__frustum_soa_aabb_dist(frustum, mnx, mny, mnz, mxx, mxy, mxz);
+	return _mm256_movemask_ps(_mm256_cmp_ps(dist, _mm256_setzero_ps(), _CMP_LT_OQ)) == 0;
+#elif defined(RG_MATH_SSE)
+	__m128 mn = RG_VEC3_LOAD(&aabb->min);
+	__m128 mx = RG_VEC3_LOAD(&aabb->max);
+	__m128 mnx = _mm_shuffle_ps(mn, mn, _MM_SHUFFLE(0, 0, 0, 0));
+	__m128 mny = _mm_shuffle_ps(mn, mn, _MM_SHUFFLE(1, 1, 1, 1));
+	__m128 mnz = _mm_shuffle_ps(mn, mn, _MM_SHUFFLE(2, 2, 2, 2));
+	__m128 mxx = _mm_shuffle_ps(mx, mx, _MM_SHUFFLE(0, 0, 0, 0));
+	__m128 mxy = _mm_shuffle_ps(mx, mx, _MM_SHUFFLE(1, 1, 1, 1));
+	__m128 mxz = _mm_shuffle_ps(mx, mx, _MM_SHUFFLE(2, 2, 2, 2));
+	__m128 d0 = _mm_load_ps(frustum->d);
+	__m128 d1 = _mm_load_ps(frustum->d + 4);
+	d0 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->nx), rg__frustum_soa_select(mnx, mxx, _mm_load_ps((const f32*)frustum->sel_x)), d0);
+	d1 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->nx + 4), rg__frustum_soa_select(mnx, mxx, _mm_load_ps((const f32*)frustum->sel_x + 4)), d1);
+	d0 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->ny), rg__frustum_soa_select(mny, mxy, _mm_load_ps((const f32*)frustum->sel_y)), d0);
+	d1 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->ny + 4), rg__frustum_soa_select(mny, mxy, _mm_load_ps((const f32*)frustum->sel_y + 4)), d1);
+	d0 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->nz), rg__frustum_soa_select(mnz, mxz, _mm_load_ps((const f32*)frustum->sel_z)), d0);
+	d1 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->nz + 4), rg__frustum_soa_select(mnz, mxz, _mm_load_ps((const f32*)frustum->sel_z + 4)), d1);
+	__m128 zero = _mm_setzero_ps();
+	return _mm_movemask_ps(_mm_or_ps(_mm_cmplt_ps(d0, zero), _mm_cmplt_ps(d1, zero))) == 0;
+#else
+	int outside = 0;
+	for (int i = 0; i < RG_FRUSTUM_PLANE_COUNT; i++)
+	{
+		f32 dist = frustum->d[i];
+		dist += frustum->nx[i] * (frustum->sel_x[i] ? aabb->max.x : aabb->min.x);
+		dist += frustum->ny[i] * (frustum->sel_y[i] ? aabb->max.y : aabb->min.y);
+		dist += frustum->nz[i] * (frustum->sel_z[i] ? aabb->max.z : aabb->min.z);
+		outside |= (dist < 0.0f);
+	}
+	return !outside;
+#endif
+}
+
+RGINLINE int rg_sphere_in_frustum_soa(const rg_sphere* sphere, const rg_frustum_soa* frustum)
+{
+#if defined(RG_MATH_AVX)
+	__m256 cx, cy, cz;
+	rg__frustum_soa_broadcast3(RG_VEC3_LOAD(&sphere->center), &cx, &cy, &cz);
+	__m256 dist = _mm256_add_ps(_mm256_load_ps(frustum->d), _mm256_set1_ps(sphere->radius));
+	dist = rg__frustum_soa_fmadd(_mm256_load_ps(frustum->nx), cx, dist);
+	dist = rg__frustum_soa_fmadd(_mm256_load_ps(frustum->ny), cy, dist);
+	dist = rg__frustum_soa_fmadd(_mm256_load_ps(frustum->nz), cz, dist);
+	return _mm256_movemask_ps(_mm256_cmp_ps(dist, _mm256_setzero_ps(), _CMP_LT_OQ)) == 0;
+#elif defined(RG_MATH_SSE)
+	__m128 c = RG_VEC3_LOAD(&sphere->center);
+	__m128 cx = _mm_shuffle_ps(c, c, _MM_SHUFFLE(0, 0, 0, 0));
+	__m128 cy = _mm_shuffle_ps(c, c, _MM_SHUFFLE(1, 1, 1, 1));
+	__m128 cz = _mm_shuffle_ps(c, c, _MM_SHUFFLE(2, 2, 2, 2));
+	__m128 radius = _mm_set1_ps(sphere->radius);
+	__m128 d0 = _mm_add_ps(_mm_load_ps(frustum->d), radius);
+	__m128 d1 = _mm_add_ps(_mm_load_ps(frustum->d + 4), radius);
+	d0 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->nx), cx, d0);
+	d1 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->nx + 4), cx, d1);
+	d0 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->ny), cy, d0);
+	d1 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->ny + 4), cy, d1);
+	d0 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->nz), cz, d0);
+	d1 = RG_MATH_FMADD_PS(_mm_load_ps(frustum->nz + 4), cz, d1);
+	__m128 zero = _mm_setzero_ps();
+	return _mm_movemask_ps(_mm_or_ps(_mm_cmplt_ps(d0, zero), _mm_cmplt_ps(d1, zero))) == 0;
+#else
+	const f32 cx = sphere->center.x;
+	const f32 cy = sphere->center.y;
+	const f32 cz = sphere->center.z;
+	int outside = 0;
+	for (int i = 0; i < RG_FRUSTUM_PLANE_COUNT; i++)
+	{
+		f32 dist = frustum->d[i] + sphere->radius;
+		dist += frustum->nx[i] * cx;
+		dist += frustum->ny[i] * cy;
+		dist += frustum->nz[i] * cz;
+		outside |= (dist < 0.0f);
+	}
+	return !outside;
+#endif
+}
+
+RGINLINE size_t rg_frustum_cull_aabbs(const rg_frustum_soa* frustum, const rg_aabb* RG_MATH_RESTRICT boxes, size_t count, u8* RG_MATH_RESTRICT out)
+{
+	size_t visible = 0;
+	size_t i = 0;
+#if defined(RG_MATH_AVX)
+	// Eight boxes at a time: transpose the (min | max) rows into one register
+	// per component, then evaluate the six planes across all eight boxes using
+	// the corner each plane's normal selects.
+	const __m256 zero = _mm256_setzero_ps();
+	for (; i + 8 <= count; i += 8)
+	{
+		__m256 mm[8];
+		for (int k = 0; k < 8; k++)
+		{
+			mm[k] = _mm256_loadu_ps(boxes[i + k].min.data); // min | max
+		}
+		__m256 t0 = _mm256_unpacklo_ps(mm[0], mm[1]);
+		__m256 t1 = _mm256_unpackhi_ps(mm[0], mm[1]);
+		__m256 t2 = _mm256_unpacklo_ps(mm[2], mm[3]);
+		__m256 t3 = _mm256_unpackhi_ps(mm[2], mm[3]);
+		__m256 t4 = _mm256_unpacklo_ps(mm[4], mm[5]);
+		__m256 t5 = _mm256_unpackhi_ps(mm[4], mm[5]);
+		__m256 t6 = _mm256_unpacklo_ps(mm[6], mm[7]);
+		__m256 t7 = _mm256_unpackhi_ps(mm[6], mm[7]);
+		__m256 s0 = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(1, 0, 1, 0)); // x of boxes 0-3: min | max
+		__m256 s1 = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(3, 2, 3, 2)); // y
+		__m256 s2 = _mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(1, 0, 1, 0)); // z
+		__m256 s4 = _mm256_shuffle_ps(t4, t6, _MM_SHUFFLE(1, 0, 1, 0)); // boxes 4-7
+		__m256 s5 = _mm256_shuffle_ps(t4, t6, _MM_SHUFFLE(3, 2, 3, 2));
+		__m256 s6 = _mm256_shuffle_ps(t5, t7, _MM_SHUFFLE(1, 0, 1, 0));
+		__m256 mnx = _mm256_permute2f128_ps(s0, s4, 0x20);
+		__m256 mxx = _mm256_permute2f128_ps(s0, s4, 0x31);
+		__m256 mny = _mm256_permute2f128_ps(s1, s5, 0x20);
+		__m256 mxy = _mm256_permute2f128_ps(s1, s5, 0x31);
+		__m256 mnz = _mm256_permute2f128_ps(s2, s6, 0x20);
+		__m256 mxz = _mm256_permute2f128_ps(s2, s6, 0x31);
+		__m256 outside = zero;
+		for (int p = 0; p < RG_FRUSTUM_PLANE_COUNT; p++)
+		{
+			__m256 px = frustum->sel_x[p] ? mxx : mnx;
+			__m256 py = frustum->sel_y[p] ? mxy : mny;
+			__m256 pz = frustum->sel_z[p] ? mxz : mnz;
+			__m256 dist = _mm256_set1_ps(frustum->d[p]);
+			dist = rg__frustum_soa_fmadd(_mm256_set1_ps(frustum->nx[p]), px, dist);
+			dist = rg__frustum_soa_fmadd(_mm256_set1_ps(frustum->ny[p]), py, dist);
+			dist = rg__frustum_soa_fmadd(_mm256_set1_ps(frustum->nz[p]), pz, dist);
+			outside = _mm256_or_ps(outside, _mm256_cmp_ps(dist, zero, _CMP_LT_OQ));
+		}
+		int inside_mask = ~_mm256_movemask_ps(outside) & 0xFF;
+		for (int k = 0; k < 8; k++)
+		{
+			u8 flag = (u8)((inside_mask >> k) & 1);
+			out[i + k] = flag;
+			visible += flag;
+		}
+	}
+#endif
+	for (; i < count; i++)
+	{
+		u8 flag = (u8)rg_aabb_in_frustum_soa(&boxes[i], frustum);
+		out[i] = flag;
+		visible += flag;
+	}
+	return visible;
+}
+
+RGINLINE size_t rg_frustum_cull_spheres(const rg_frustum_soa* frustum, const rg_sphere* RG_MATH_RESTRICT spheres, size_t count, u8* RG_MATH_RESTRICT out)
+{
+	size_t visible = 0;
+	for (size_t i = 0; i < count; i++)
+	{
+		u8 flag = (u8)rg_sphere_in_frustum_soa(&spheres[i], frustum);
+		out[i] = flag;
+		visible += flag;
+	}
+	return visible;
 }
 
 RGINLINE void rg_frustum_corners(const rg_mat4* inv_mat, rg_vec4 out[RG_FRUSTUM_CORNER_COUNT])
@@ -1877,6 +2307,8 @@ RGINLINE int rg_ray_sphere_distance(const rg_ray* ray, const rg_sphere* sphere, 
 
 RGINLINE int rg_ray_triangle(const rg_ray* ray, const rg_vec3* a, const rg_vec3* b, const rg_vec3* c, f32* t)
 {
+	// Moller-Trumbore with the division deferred past the barycentric rejects:
+	// u and v are compared against |det| instead of being divided by det.
 	const f32 epsilon = 0.000001f;
 	f32 e1x = b->x - a->x;
 	f32 e1y = b->y - a->y;
@@ -1892,18 +2324,19 @@ RGINLINE int rg_ray_triangle(const rg_ray* ray, const rg_vec3* a, const rg_vec3*
 	f32 pz = dx * e2y - dy * e2x;
 
 	f32 det = e1x * px + e1y * py + e1z * pz;
-	if (det > -epsilon && det < epsilon)
+	f32 abs_det = rg_absf(det);
+	if (abs_det < epsilon)
 	{
 		return 0;
 	}
 
-	f32 inv_det = 1.0f / det;
+	f32 det_sign = (det < 0.0f) ? -1.0f : 1.0f;
 	f32 tx = ray->origin.x - a->x;
 	f32 ty = ray->origin.y - a->y;
 	f32 tz = ray->origin.z - a->z;
 
-	f32 u = inv_det * (tx * px + ty * py + tz * pz);
-	if (u < 0.0f || u > 1.0f)
+	f32 u = (tx * px + ty * py + tz * pz) * det_sign;
+	if (u < 0.0f || u > abs_det)
 	{
 		return 0;
 	}
@@ -1911,13 +2344,13 @@ RGINLINE int rg_ray_triangle(const rg_ray* ray, const rg_vec3* a, const rg_vec3*
 	f32 qx = ty * e1z - tz * e1y;
 	f32 qy = tz * e1x - tx * e1z;
 	f32 qz = tx * e1y - ty * e1x;
-	f32 v = inv_det * (dx * qx + dy * qy + dz * qz);
-	if (v < 0.0f || (u + v) > 1.0f)
+	f32 v = (dx * qx + dy * qy + dz * qz) * det_sign;
+	if (v < 0.0f || (u + v) > abs_det)
 	{
 		return 0;
 	}
 
-	f32 dist = inv_det * (e2x * qx + e2y * qy + e2z * qz);
+	f32 dist = (e2x * qx + e2y * qy + e2z * qz) * det_sign / abs_det;
 	if (t)
 	{
 		*t = dist;
@@ -2118,93 +2551,130 @@ RGINLINE int rg_line_sphere(const rg_vec3* p0, const rg_vec3* p1, const rg_spher
 	return 1;
 }
 
+// Slab interval of a ray (origin, reciprocal direction) against an AABB.
+// parallel marks lanes whose direction component is exactly zero: there the
+// clamped reciprocal would turn an origin exactly on a face into a bound of 0,
+// so the lane is replaced by the unbounded interval (-inf, +inf) and the
+// origin is tested against the slab directly. Returns 0 when a parallel lane
+// lies outside its slab (a miss), 1 otherwise.
+#ifdef RG_MATH_SSE
+RGINLINE int rg__ray_aabb_slabs(__m128 origin, __m128 inv_dir, __m128 parallel, const rg_aabb* aabb, f32* near_t, f32* far_t)
+{
+	const __m128 zero = _mm_setzero_ps();
+	const __m128 neg_inf = _mm_castsi128_ps(_mm_set1_epi32((int)0xFF800000));
+	const __m128 pos_inf = _mm_castsi128_ps(_mm_set1_epi32(0x7F800000));
+	__m128 lo = _mm_sub_ps(RG_VEC3_LOAD(&aabb->min), origin);
+	__m128 hi = _mm_sub_ps(RG_VEC3_LOAD(&aabb->max), origin);
+	__m128 inside = _mm_and_ps(_mm_cmple_ps(lo, zero), _mm_cmpge_ps(hi, zero));
+	__m128 outside = _mm_andnot_ps(inside, parallel);
+	__m128 t0 = _mm_mul_ps(lo, inv_dir);
+	__m128 t1 = _mm_mul_ps(hi, inv_dir);
+	__m128 tn = _mm_min_ps(t0, t1);
+	__m128 tf = _mm_max_ps(t0, t1);
+	tn = _mm_or_ps(_mm_andnot_ps(parallel, tn), _mm_and_ps(parallel, neg_inf));
+	tf = _mm_or_ps(_mm_andnot_ps(parallel, tf), _mm_and_ps(parallel, pos_inf));
+	// Lane 3 is padding: duplicate z into it before the horizontal max/min.
+	tn = _mm_shuffle_ps(tn, tn, _MM_SHUFFLE(2, 2, 1, 0));
+	tf = _mm_shuffle_ps(tf, tf, _MM_SHUFFLE(2, 2, 1, 0));
+	tn = _mm_max_ps(tn, _mm_shuffle_ps(tn, tn, _MM_SHUFFLE(1, 0, 3, 2)));
+	tf = _mm_min_ps(tf, _mm_shuffle_ps(tf, tf, _MM_SHUFFLE(1, 0, 3, 2)));
+	tn = _mm_max_ss(tn, _mm_shuffle_ps(tn, tn, _MM_SHUFFLE(0, 0, 0, 1)));
+	tf = _mm_min_ss(tf, _mm_shuffle_ps(tf, tf, _MM_SHUFFLE(0, 0, 0, 1)));
+	*near_t = _mm_cvtss_f32(tn);
+	*far_t = _mm_cvtss_f32(tf);
+	return (_mm_movemask_ps(outside) & 0x7) == 0;
+}
+#else
+RGINLINE int rg__ray_aabb_slab_bounds(f32 lo, f32 hi, f32 dir, f32 inv_dir, f32* t0, f32* t1)
+{
+	if (dir == 0.0f)
+	{
+		rg_float_bits inf;
+		inf.u = 0x7F800000u;
+		*t0 = -inf.f;
+		*t1 = inf.f;
+		return lo <= 0.0f && hi >= 0.0f;
+	}
+	*t0 = lo * inv_dir;
+	*t1 = hi * inv_dir;
+	return 1;
+}
+
+RGINLINE int rg__ray_aabb_slabs(const rg_vec3* origin, const rg_vec3* dir, const rg_vec3* inv_dir, const rg_aabb* aabb, f32* near_t, f32* far_t)
+{
+	f32 tx0, tx1, ty0, ty1, tz0, tz1;
+	int ok = rg__ray_aabb_slab_bounds(aabb->min.x - origin->x, aabb->max.x - origin->x, dir->x, inv_dir->x, &tx0, &tx1);
+	ok &= rg__ray_aabb_slab_bounds(aabb->min.y - origin->y, aabb->max.y - origin->y, dir->y, inv_dir->y, &ty0, &ty1);
+	ok &= rg__ray_aabb_slab_bounds(aabb->min.z - origin->z, aabb->max.z - origin->z, dir->z, inv_dir->z, &tz0, &tz1);
+	*near_t = rg_maxf(rg_maxf(rg_minf(tx0, tx1), rg_minf(ty0, ty1)), rg_minf(tz0, tz1));
+	*far_t = rg_minf(rg_minf(rg_maxf(tx0, tx1), rg_maxf(ty0, ty1)), rg_maxf(tz0, tz1));
+	return ok;
+}
+#endif
+
 RGINLINE int rg_ray_aabb(const rg_ray* ray, const rg_aabb* aabb, f32* tmin, f32* tmax)
 {
-	f32 t0 = -FLT_MAX;
-	f32 t1 = FLT_MAX;
+	f32 near_t;
+	f32 far_t;
+#ifdef RG_MATH_SSE
+	__m128 dir = RG_VEC3_LOAD(&ray->dir);
+	int ok = rg__ray_aabb_slabs(RG_VEC3_LOAD(&ray->origin), rg__ray_inv_dir_ps(dir), _mm_cmpeq_ps(dir, _mm_setzero_ps()), aabb, &near_t, &far_t);
+#else
+	rg_vec3 inv_dir;
+	inv_dir.x = rg__ray_inv_dir_component(ray->dir.x);
+	inv_dir.y = rg__ray_inv_dir_component(ray->dir.y);
+	inv_dir.z = rg__ray_inv_dir_component(ray->dir.z);
+	int ok = rg__ray_aabb_slabs(&ray->origin, &ray->dir, &inv_dir, aabb, &near_t, &far_t);
+#endif
+	// The interval is reported whenever the slabs overlap, even behind the origin.
+	if (!ok || near_t > far_t)
+	{
+		return 0;
+	}
+	if (tmin) *tmin = near_t;
+	if (tmax) *tmax = far_t;
 
-	if (rg_absf(ray->dir.x) < RG_EPSILON)
-	{
-		if (ray->origin.x < aabb->min.x || ray->origin.x > aabb->max.x)
-		{
-			return 0;
-		}
-	}
-	else
-	{
-		f32 inv = 1.0f / ray->dir.x;
-		f32 tminx = (aabb->min.x - ray->origin.x) * inv;
-		f32 tmaxx = (aabb->max.x - ray->origin.x) * inv;
-		if (tminx > tmaxx)
-		{
-			f32 tmp = tminx;
-			tminx = tmaxx;
-			tmaxx = tmp;
-		}
-		t0 = rg_maxf(t0, tminx);
-		t1 = rg_minf(t1, tmaxx);
-		if (t0 > t1)
-		{
-			return 0;
-		}
-	}
+	return far_t >= 0.0f;
+}
 
-	if (rg_absf(ray->dir.y) < RG_EPSILON)
-	{
-		if (ray->origin.y < aabb->min.y || ray->origin.y > aabb->max.y)
-		{
-			return 0;
-		}
-	}
-	else
-	{
-		f32 inv = 1.0f / ray->dir.y;
-		f32 tminy = (aabb->min.y - ray->origin.y) * inv;
-		f32 tmaxy = (aabb->max.y - ray->origin.y) * inv;
-		if (tminy > tmaxy)
-		{
-			f32 tmp = tminy;
-			tminy = tmaxy;
-			tmaxy = tmp;
-		}
-		t0 = rg_maxf(t0, tminy);
-		t1 = rg_minf(t1, tmaxy);
-		if (t0 > t1)
-		{
-			return 0;
-		}
-	}
+RGINLINE int rg_ray_inv_aabb(const rg_ray_inv* ray, const rg_aabb* aabb, f32* tmin, f32* tmax)
+{
+	f32 near_t;
+	f32 far_t;
+#ifdef RG_MATH_SSE
+	int ok = rg__ray_aabb_slabs(RG_VEC3_LOAD(&ray->origin), RG_VEC3_LOAD(&ray->inv_dir), _mm_cmpeq_ps(RG_VEC3_LOAD(&ray->dir), _mm_setzero_ps()), aabb, &near_t, &far_t);
+#else
+	int ok = rg__ray_aabb_slabs(&ray->origin, &ray->dir, &ray->inv_dir, aabb, &near_t, &far_t);
+#endif
+	if (tmin) *tmin = near_t;
+	if (tmax) *tmax = far_t;
 
-	if (rg_absf(ray->dir.z) < RG_EPSILON)
-	{
-		if (ray->origin.z < aabb->min.z || ray->origin.z > aabb->max.z)
-		{
-			return 0;
-		}
-	}
-	else
-	{
-		f32 inv = 1.0f / ray->dir.z;
-		f32 tminz = (aabb->min.z - ray->origin.z) * inv;
-		f32 tmaxz = (aabb->max.z - ray->origin.z) * inv;
-		if (tminz > tmaxz)
-		{
-			f32 tmp = tminz;
-			tminz = tmaxz;
-			tmaxz = tmp;
-		}
-		t0 = rg_maxf(t0, tminz);
-		t1 = rg_minf(t1, tmaxz);
-		if (t0 > t1)
-		{
-			return 0;
-		}
-	}
+	return ok & (near_t <= far_t) & (far_t >= 0.0f);
+}
 
-	if (tmin) *tmin = t0;
-	if (tmax) *tmax = t1;
-
-	return t1 >= 0.0f;
+RGINLINE size_t rg_ray_inv_aabbs(const rg_ray_inv* ray, const rg_aabb* RG_MATH_RESTRICT boxes, size_t count, f32* RG_MATH_RESTRICT tmins, u8* RG_MATH_RESTRICT out)
+{
+	size_t hits = 0;
+#ifdef RG_MATH_SSE
+	const __m128 origin = RG_VEC3_LOAD(&ray->origin);
+	const __m128 inv_dir = RG_VEC3_LOAD(&ray->inv_dir);
+	const __m128 parallel = _mm_cmpeq_ps(RG_VEC3_LOAD(&ray->dir), _mm_setzero_ps());
+#endif
+	for (size_t i = 0; i < count; i++)
+	{
+		f32 near_t;
+		f32 far_t;
+#ifdef RG_MATH_SSE
+		int ok = rg__ray_aabb_slabs(origin, inv_dir, parallel, &boxes[i], &near_t, &far_t);
+#else
+		int ok = rg__ray_aabb_slabs(&ray->origin, &ray->dir, &ray->inv_dir, &boxes[i], &near_t, &far_t);
+#endif
+		u8 hit = (u8)(ok & (near_t <= far_t) & (far_t >= 0.0f));
+		if (tmins) tmins[i] = near_t;
+		out[i] = hit;
+		hits += hit;
+	}
+	return hits;
 }
 
 RGINLINE int rg_aabb_plane(const rg_aabb* aabb, const rg_plane* plane)

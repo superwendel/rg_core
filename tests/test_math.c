@@ -1,5 +1,9 @@
 // rg_math public API correctness tests
 
+// Route library assertions to a counter so contract violations are testable.
+static void math_assert_failed(const char* expression);
+#define RG_MATH_ASSERT(x) ((x) ? (void)0 : math_assert_failed(#x))
+
 #include "../src/rg_math.h"
 #include "../src/rg_math.h"
 
@@ -8,6 +12,13 @@
 
 static int tests_run;
 static int tests_failed;
+static int math_assert_failures;
+
+static void math_assert_failed(const char* expression)
+{
+	(void)expression;
+	math_assert_failures++;
+}
 
 static void check_condition(int condition, const char* expression, const char* file, int line)
 {
@@ -585,6 +596,797 @@ static void test_inverse_and_multiply_contracts(void)
 	}
 }
 
+
+// =============================================================================
+// Geometry fast paths, batched culling, ray_inv, slerp, and regressions
+// =============================================================================
+
+static uint32_t test_rng_state = UINT32_C(0x9E3779B9);
+
+static f32 test_random_unit(void)
+{
+	test_rng_state ^= test_rng_state << 13;
+	test_rng_state ^= test_rng_state >> 17;
+	test_rng_state ^= test_rng_state << 5;
+	return (f32)(test_rng_state >> 8) * (1.0f / 16777216.0f);
+}
+
+static f32 test_random_range(f32 lo, f32 hi)
+{
+	return lo + (hi - lo) * test_random_unit();
+}
+
+static void test_random_box(rg_aabb* box, f32 center_range, f32 max_extent)
+{
+	rg_vec3 center = rg_vec3(test_random_range(-center_range, center_range), test_random_range(-center_range, center_range), test_random_range(-center_range, center_range));
+	rg_vec3 extents = rg_vec3(test_random_range(0.0f, max_extent), test_random_range(0.0f, max_extent), test_random_range(0.0f, max_extent));
+	rg_aabb_from_center_extents(box, &center, &extents);
+}
+
+static void test_ray_aabb(void)
+{
+	rg_aabb box;
+	rg_ray ray;
+	rg_vec3 min = rg_vec3(-1, -1, -1), max = rg_vec3(1, 1, 1);
+	f32 tmin, tmax;
+	rg_aabb_set(&box, &min, &max);
+
+	// Straight hit from the front.
+	rg_vec3_set(&ray.origin, 0, 0, -5);
+	rg_vec3_set(&ray.dir, 0, 0, 1);
+	tmin = tmax = 123.0f;
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, 4.0f, 1e-5f);
+	CHECK_CLOSE(tmax, 6.0f, 1e-5f);
+	CHECK(rg_ray_aabb(&ray, &box, NULL, NULL));
+	// Negative direction component.
+	rg_vec3_set(&ray.origin, 0, 0, 5);
+	rg_vec3_set(&ray.dir, 0, 0, -1);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, 4.0f, 1e-5f);
+	CHECK_CLOSE(tmax, 6.0f, 1e-5f);
+	// Non-normalized direction scales the distances.
+	rg_vec3_set(&ray.origin, 0, 0, -5);
+	rg_vec3_set(&ray.dir, 0, 0, 2);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, 2.0f, 1e-5f);
+	CHECK_CLOSE(tmax, 3.0f, 1e-5f);
+	// Origin inside: negative near distance.
+	rg_vec3_set(&ray.origin, 0.5f, 0, 0);
+	rg_vec3_set(&ray.dir, 1, 0, 0);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, -1.5f, 1e-5f);
+	CHECK_CLOSE(tmax, 0.5f, 1e-5f);
+	// Box behind the origin: a miss that still reports the overlapping slabs.
+	rg_vec3_set(&ray.origin, 0, 0, -5);
+	rg_vec3_set(&ray.dir, 0, 0, -1);
+	tmin = tmax = 123.0f;
+	CHECK(!rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, -6.0f, 1e-5f);
+	CHECK_CLOSE(tmax, -4.0f, 1e-5f);
+	// Slab miss leaves the outputs untouched.
+	rg_vec3_set(&ray.origin, 5, 0, -5);
+	rg_vec3_set(&ray.dir, 0, 0, 1);
+	tmin = tmax = 123.0f;
+	CHECK(!rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK(tmin == 123.0f && tmax == 123.0f);
+	// Parallel to the x and y slabs with the origin inside them.
+	rg_vec3_set(&ray.origin, 0.5f, -0.5f, -5);
+	rg_vec3_set(&ray.dir, 0, 0, 1);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, 4.0f, 1e-5f);
+	CHECK_CLOSE(tmax, 6.0f, 1e-5f);
+	// Parallel with the origin outside the slab.
+	rg_vec3_set(&ray.origin, 2.0f, 0, -5);
+	CHECK(!rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	rg_vec3_set(&ray.origin, 0, -1.0001f, -5);
+	CHECK(!rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	// Parallel with the origin exactly on a face counts as touching, for +0 and -0.
+	rg_vec3_set(&ray.origin, 1.0f, -1.0f, -5);
+	rg_vec3_set(&ray.dir, 0.0f, -0.0f, 1);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, 4.0f, 1e-5f);
+	CHECK_CLOSE(tmax, 6.0f, 1e-5f);
+	rg_vec3_set(&ray.dir, -0.0f, 0.0f, 1);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, 4.0f, 1e-5f);
+	CHECK_CLOSE(tmax, 6.0f, 1e-5f);
+	// Direction below RG_EPSILON but nonzero is a real (very long) slab.
+	rg_vec3_set(&ray.origin, 0, 0, -5);
+	rg_vec3_set(&ray.dir, 1e-8f, 0, 1);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, 4.0f, 1e-5f);
+	// Zero direction: hit only when the origin is inside.
+	rg_vec3_set(&ray.dir, 0, 0, 0);
+	rg_vec3_set(&ray.origin, 0.25f, 0.25f, 0.25f);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK(tmin <= 0.0f && tmax >= 0.0f);
+	rg_vec3_set(&ray.origin, 0.25f, 0.25f, 1.25f);
+	CHECK(!rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	// Diagonal ray.
+	{
+		f32 s = 1.0f / sqrtf(3.0f);
+		rg_vec3_set(&ray.origin, -5, -5, -5);
+		rg_vec3_set(&ray.dir, s, s, s);
+		CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+		CHECK_CLOSE(tmin, 4.0f * sqrtf(3.0f), 1e-4f);
+		CHECK_CLOSE(tmax, 6.0f * sqrtf(3.0f), 1e-4f);
+	}
+	// Degenerate zero-extent box.
+	rg_vec3_set(&min, 0, 0, 0);
+	rg_aabb_set(&box, &min, &min);
+	rg_vec3_set(&ray.origin, 0, 0, -5);
+	rg_vec3_set(&ray.dir, 0, 0, 1);
+	CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+	CHECK_CLOSE(tmin, 5.0f, 1e-5f);
+	CHECK_CLOSE(tmax, 5.0f, 1e-5f);
+	rg_vec3_set(&ray.origin, 0.1f, 0, -5);
+	CHECK(!rg_ray_aabb(&ray, &box, &tmin, &tmax));
+}
+
+static void test_ray_inv_aabb(void)
+{
+	enum { BOX_COUNT = 37 };
+	rg_aabb boxes[BOX_COUNT];
+	f32 tmins[BOX_COUNT];
+	u8 flags[BOX_COUNT];
+	rg_ray ray;
+	rg_ray_inv inv;
+	rg_vec3 min = rg_vec3(-1, -1, -1), max = rg_vec3(1, 1, 1);
+	f32 tmin, tmax, near_t, far_t;
+
+	rg_aabb_set(&boxes[0], &min, &max);
+	rg_vec3_set(&ray.origin, 0, 0, -5);
+	rg_vec3_set(&ray.dir, 0, 0, 1);
+	rg_ray_inv_make(&inv, &ray);
+	check_vec3(&inv.origin, 0, 0, -5, 0.0f);
+	check_vec3(&inv.dir, 0, 0, 1, 0.0f);
+	CHECK(inv.inv_dir.z == 1.0f);
+	CHECK(inv.inv_dir.x > 1e29f && inv.inv_dir.y > 1e29f); // clamped, not inf
+	CHECK(rg_ray_inv_aabb(&inv, &boxes[0], &tmin, &tmax));
+	CHECK_CLOSE(tmin, 4.0f, 1e-5f);
+	CHECK_CLOSE(tmax, 6.0f, 1e-5f);
+	rg_vec3_set(&ray.dir, -0.0f, 1e-9f, -3.0f);
+	rg_ray_inv_make(&inv, &ray);
+	CHECK(inv.inv_dir.x < -1e29f);
+	CHECK(inv.inv_dir.y == 1e9f);
+	CHECK(inv.inv_dir.z == 1.0f / -3.0f);
+	// A slab miss still writes the (empty) interval.
+	rg_vec3_set(&ray.origin, 5, 0, -5);
+	rg_vec3_set(&ray.dir, -0.01f, 0, 1);
+	rg_ray_inv_make(&inv, &ray);
+	tmin = tmax = 123.0f;
+	CHECK(!rg_ray_inv_aabb(&inv, &boxes[0], &tmin, &tmax));
+	CHECK(tmin != 123.0f && tmax != 123.0f && tmin > tmax);
+	CHECK(!rg_ray_inv_aabb(&inv, &boxes[0], NULL, NULL));
+	// A parallel lane outside its slab is a miss too; the interval is then unconstrained in that lane.
+	rg_vec3_set(&ray.dir, 0, 0, 1);
+	rg_ray_inv_make(&inv, &ray);
+	CHECK(!rg_ray_inv_aabb(&inv, &boxes[0], &tmin, &tmax));
+
+	// Random rays agree with rg_ray_aabb, and the batch agrees with the single test.
+	for (i32 iteration = 0; iteration < 200; ++iteration)
+	{
+		for (i32 k = 0; k < BOX_COUNT; ++k)
+			test_random_box(&boxes[k], 10.0f, 3.0f);
+		rg_aabb_center(&boxes[iteration % BOX_COUNT], &ray.origin);
+		if (iteration & 1)
+			rg_vec3_set(&ray.origin, test_random_range(-15, 15), test_random_range(-15, 15), test_random_range(-15, 15));
+		rg_vec3_set(&ray.dir, test_random_range(-1, 1), test_random_range(-1, 1), test_random_range(-1, 1));
+		if ((iteration & 7) == 2) ray.dir.data[iteration % 3] = 0.0f;
+		if ((iteration & 7) == 3) ray.dir.data[iteration % 3] = -0.0f;
+		rg_ray_inv_make(&inv, &ray);
+		size_t count = (size_t)(iteration % 3 == 0 ? BOX_COUNT : (iteration % 3 == 1 ? 8 : 1));
+		size_t hits = rg_ray_inv_aabbs(&inv, boxes, count, tmins, flags);
+		size_t expected = 0;
+		for (size_t k = 0; k < count; ++k)
+		{
+			int hit = rg_ray_inv_aabb(&inv, &boxes[k], &near_t, &far_t);
+			int reference = rg_ray_aabb(&ray, &boxes[k], &tmin, &tmax);
+			CHECK(hit == reference);
+			if (hit && reference)
+			{
+				CHECK(near_t == tmin);
+				CHECK(far_t == tmax);
+			}
+			CHECK(flags[k] == (u8)hit);
+			CHECK(tmins[k] == near_t);
+			expected += (size_t)hit;
+		}
+		CHECK(hits == expected);
+	}
+	// Count 0 touches nothing; tmins may be NULL.
+	flags[0] = 7;
+	tmins[0] = 123.0f;
+	CHECK(rg_ray_inv_aabbs(&inv, boxes, 0, tmins, flags) == 0);
+	CHECK(flags[0] == 7 && tmins[0] == 123.0f);
+	{
+		size_t hits = rg_ray_inv_aabbs(&inv, boxes, 5, NULL, flags);
+		CHECK(hits == (size_t)flags[0] + flags[1] + flags[2] + flags[3] + flags[4]);
+	}
+}
+
+static void test_ray_triangle(void)
+{
+	rg_vec3 a = rg_vec3(0, 0, 0), b = rg_vec3(1, 0, 0), c = rg_vec3(0, 1, 0);
+	rg_ray ray;
+	f32 t;
+
+	rg_vec3_set(&ray.origin, 0.25f, 0.25f, -1);
+	rg_vec3_set(&ray.dir, 0, 0, 1);
+	t = 0.0f;
+	CHECK(rg_ray_triangle(&ray, &a, &b, &c, &t));
+	CHECK_CLOSE(t, 1.0f, 1e-6f);
+	// Reversed winding (negative determinant) hits as well.
+	CHECK(rg_ray_triangle(&ray, &a, &c, &b, &t));
+	CHECK_CLOSE(t, 1.0f, 1e-6f);
+	CHECK(rg_ray_triangle(&ray, &a, &b, &c, NULL));
+	// Triangle behind the origin: t is written but the result is a miss.
+	rg_vec3_set(&ray.origin, 0.25f, 0.25f, 1);
+	CHECK(!rg_ray_triangle(&ray, &a, &b, &c, &t));
+	CHECK_CLOSE(t, -1.0f, 1e-6f);
+	// Outside the hypotenuse edge, and outside the u/v edges.
+	rg_vec3_set(&ray.origin, 0.75f, 0.75f, -1);
+	CHECK(!rg_ray_triangle(&ray, &a, &b, &c, &t));
+	rg_vec3_set(&ray.origin, -0.01f, 0.25f, -1);
+	CHECK(!rg_ray_triangle(&ray, &a, &b, &c, &t));
+	rg_vec3_set(&ray.origin, 0.25f, -0.01f, -1);
+	CHECK(!rg_ray_triangle(&ray, &a, &b, &c, &t));
+	// Edge-on: direction in the triangle plane.
+	rg_vec3_set(&ray.origin, -1, 0.25f, 0);
+	rg_vec3_set(&ray.dir, 1, 0, 0);
+	CHECK(!rg_ray_triangle(&ray, &a, &b, &c, &t));
+	// Vertex hits (u or v at the boundary) are inclusive.
+	rg_vec3_set(&ray.origin, 1, 0, -2);
+	rg_vec3_set(&ray.dir, 0, 0, 1);
+	CHECK(rg_ray_triangle(&ray, &a, &b, &c, &t));
+	CHECK_CLOSE(t, 2.0f, 1e-6f);
+
+	// Random cases agree with the barycentric variant (independent arithmetic).
+	for (i32 i = 0; i < 2000; ++i)
+	{
+		rg_vec3 v0 = rg_vec3(test_random_range(-4, 4), test_random_range(-4, 4), test_random_range(-4, 4));
+		rg_vec3 v1 = rg_vec3(v0.x + test_random_range(-3, 3), v0.y + test_random_range(-3, 3), v0.z + test_random_range(-3, 3));
+		rg_vec3 v2 = rg_vec3(v0.x + test_random_range(-3, 3), v0.y + test_random_range(-3, 3), v0.z + test_random_range(-3, 3));
+		rg_vec3 target = rg_vec3((v0.x + v1.x + v2.x) / 3 + test_random_range(-2, 2), (v0.y + v1.y + v2.y) / 3 + test_random_range(-2, 2), (v0.z + v1.z + v2.z) / 3 + test_random_range(-2, 2));
+		rg_vec2 bary;
+		f32 t_bary = 0.0f;
+		rg_vec3_set(&ray.origin, test_random_range(-8, 8), test_random_range(-8, 8), test_random_range(-8, 8));
+		rg_vec3_sub(&target, &ray.origin, &ray.dir);
+		rg_vec3_normalize(&ray.dir, &ray.dir);
+		if (i & 1) rg_vec3_scale(&ray.dir, -1.0f, &ray.dir);
+		t = 0.0f;
+		int hit = rg_ray_triangle(&ray, &v0, &v1, &v2, &t);
+		int hit_bary = rg_ray_triangle_bary(&ray, &v0, &v1, &v2, &bary, &t_bary);
+		CHECK(hit == hit_bary);
+		if (hit && hit_bary)
+			CHECK_CLOSE(t, t_bary, 1e-5f * (1.0f + fabsf(t_bary)));
+	}
+}
+
+static void test_aabb_transform(void)
+{
+	rg_aabb box, out;
+	rg_mat4 m;
+	rg_vec3 min = rg_vec3(1, 0, 0), max = rg_vec3(2, 1, 1);
+	rg_vec3 axis = rg_vec3(0, 0, 1), offset = rg_vec3(3, -5, 7), one = rg_vec3(1, 1, 1);
+	rg_quat q;
+	rg_aabb_set(&box, &min, &max);
+
+	rg_mat4_identity(&m);
+	rg_aabb_transform(&box, &m, &out);
+	check_vec3(&out.min, 1, 0, 0, 1e-6f);
+	check_vec3(&out.max, 2, 1, 1, 1e-6f);
+	rg_mat4_translate_make(&m, &offset);
+	rg_aabb_transform(&box, &m, &out);
+	check_vec3(&out.min, 4, -5, 7, 1e-6f);
+	check_vec3(&out.max, 5, -4, 8, 1e-6f);
+	// 90 degrees about z maps x to y.
+	rg_quat_from_axis_angle(RG_HALF_PI, &axis, &q);
+	rg_quat_mat4(&q, &m);
+	rg_aabb_transform(&box, &m, &out);
+	check_vec3(&out.min, -1, 1, 0, 1e-5f);
+	check_vec3(&out.max, 0, 2, 1, 1e-5f);
+	// Negative scale keeps min <= max.
+	{
+		rg_vec3 scale = rg_vec3(-2, 1, 1), zero = rg_vec3(0, 0, 0);
+		rg_quat_identity(&q);
+		rg_mat4_trs_make(&m, &zero, &q, &scale);
+		rg_aabb_transform(&box, &m, &out);
+		check_vec3(&out.min, -4, 0, 0, 1e-5f);
+		check_vec3(&out.max, -2, 1, 1, 1e-5f);
+	}
+	// In-place transform.
+	rg_mat4_translate_make(&m, &offset);
+	out = box;
+	rg_aabb_transform(&out, &m, &out);
+	check_vec3(&out.min, 4, -5, 7, 1e-6f);
+	check_vec3(&out.max, 5, -4, 8, 1e-6f);
+	// Random affine transforms match the transformed-corner bounds.
+	for (i32 i = 0; i < 500; ++i)
+	{
+		rg_vec3 random_axis = rg_vec3(test_random_range(-1, 1), test_random_range(-1, 1), test_random_range(-1, 1));
+		rg_vec3 scale = rg_vec3(test_random_range(0.5f, 2), test_random_range(-2, -0.5f), test_random_range(0.5f, 2));
+		rg_vec3 translation = rg_vec3(test_random_range(-10, 10), test_random_range(-10, 10), test_random_range(-10, 10));
+		rg_aabb expected;
+		f64 radius = 0.0;
+		rg_vec3_normalize(&random_axis, &random_axis);
+		rg_quat_from_axis_angle(test_random_range(-3, 3), &random_axis, &q);
+		rg_mat4_trs_make(&m, &translation, &q, &scale);
+		test_random_box(&box, 10.0f, 3.0f);
+		rg_aabb_invalidate(&expected);
+		for (i32 corner = 0; corner < 8; ++corner)
+		{
+			rg_vec3 p = rg_vec3(corner & 1 ? box.max.x : box.min.x, corner & 2 ? box.max.y : box.min.y, corner & 4 ? box.max.z : box.min.z);
+			rg_vec3 transformed;
+			rg_mat4_mulv3(&m, &p, 1.0f, &transformed);
+			rg_aabb_expand_point(&expected, &transformed);
+			radius = fmax(radius, fabs(transformed.x) + fabs(transformed.y) + fabs(transformed.z));
+		}
+		rg_aabb_transform(&box, &m, &out);
+		check_vec3(&out.min, expected.min.x, expected.min.y, expected.min.z, (f32)(1e-5 * (1.0 + radius)));
+		check_vec3(&out.max, expected.max.x, expected.max.y, expected.max.z, (f32)(1e-5 * (1.0 + radius)));
+	}
+	(void)one;
+}
+
+// f64 plane test over the eight corners; returns the smallest |distance| in margin.
+static int reference_aabb_in_frustum(const rg_aabb* box, const rg_frustum* frustum, f64* margin)
+{
+	int inside = 1;
+	*margin = DBL_MAX;
+	for (i32 i = 0; i < RG_FRUSTUM_PLANE_COUNT; ++i)
+	{
+		const rg_plane* p = &frustum->planes[i];
+		f64 best = -DBL_MAX;
+		for (i32 corner = 0; corner < 8; ++corner)
+		{
+			f64 x = corner & 1 ? box->max.x : box->min.x;
+			f64 y = corner & 2 ? box->max.y : box->min.y;
+			f64 z = corner & 4 ? box->max.z : box->min.z;
+			f64 dist = (f64)p->normal.x * x + (f64)p->normal.y * y + (f64)p->normal.z * z + (f64)p->d;
+			if (dist > best) best = dist;
+		}
+		if (fabs(best) < *margin) *margin = fabs(best);
+		if (best < 0.0) inside = 0;
+	}
+	return inside;
+}
+
+static int reference_sphere_in_frustum(const rg_sphere* sphere, const rg_frustum* frustum, f64* margin)
+{
+	int inside = 1;
+	*margin = DBL_MAX;
+	for (i32 i = 0; i < RG_FRUSTUM_PLANE_COUNT; ++i)
+	{
+		const rg_plane* p = &frustum->planes[i];
+		f64 dist = (f64)p->normal.x * sphere->center.x + (f64)p->normal.y * sphere->center.y + (f64)p->normal.z * sphere->center.z + (f64)p->d + (f64)sphere->radius;
+		if (fabs(dist) < *margin) *margin = fabs(dist);
+		if (dist < 0.0) inside = 0;
+	}
+	return inside;
+}
+
+static void test_frustum_culling(void)
+{
+	enum { BOX_COUNT = 61 };
+	static rg_aabb boxes[BOX_COUNT];
+	static rg_sphere spheres[BOX_COUNT];
+	static u8 flags[BOX_COUNT];
+	rg_vec3 eye = rg_vec3(0, 0, 0), target = rg_vec3(0, 0, -1), up = rg_vec3(0, 1, 0);
+	rg_mat4 view, projection, view_projection;
+	rg_frustum frustum;
+	rg_frustum_soa soa;
+	rg_aabb box;
+	rg_sphere sphere;
+	rg_vec3 center, extents;
+
+	// Symmetric 90 degree frustum looking down -z: |x|, |y| <= -z, 1 <= -z <= 100.
+	rg_mat4_look_at_rh(&eye, &target, &up, &view);
+	rg_mat4_perspective_rh_no(RG_HALF_PI, 1.0f, 1.0f, 100.0f, &projection);
+	rg_mat4_mul(&projection, &view, &view_projection);
+	rg_frustum_from_mat4_no(&view_projection, &frustum);
+	for (i32 i = 0; i < RG_FRUSTUM_PLANE_COUNT; ++i)
+		CHECK(frustum.planes[i].normal._pad == 0.0f);
+	rg_frustum_soa_from_frustum(&frustum, &soa);
+	for (i32 i = 0; i < RG_FRUSTUM_PLANE_COUNT; ++i)
+	{
+		CHECK(soa.nx[i] == frustum.planes[i].normal.x && soa.d[i] == frustum.planes[i].d);
+		CHECK((soa.sel_x[i] != 0u) == (frustum.planes[i].normal.x >= 0.0f) && (soa.sel_z[i] != 0u) == (frustum.planes[i].normal.z >= 0.0f));
+	}
+	for (i32 i = RG_FRUSTUM_PLANE_COUNT; i < RG_FRUSTUM_SOA_LANES; ++i)
+		CHECK(soa.nx[i] == 0.0f && soa.ny[i] == 0.0f && soa.nz[i] == 0.0f && soa.d[i] > 0.0f);
+
+	// Inside, straddling each plane, fully outside each plane, degenerate, and enclosing boxes.
+	const f32 centers[][3] = {{0, 0, -10}, {-10, 0, -10}, {10, 0, -10}, {0, -10, -10}, {0, 10, -10}, {0, 0, -1}, {0, 0, -100},
+	                          {-13, 0, -10}, {13, 0, -10}, {0, -13, -10}, {0, 13, -10}, {0, 0, 0.5f}, {0, 0, -102}, {0, 0, -10}, {0, 0, 5}, {0, 0, -50}};
+	const f32 half[][3] = {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1},
+	                       {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}, {500, 500, 500}};
+	const int expected[] = {1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1};
+	for (size_t i = 0; i < RG_ARRAY_COUNT(expected); ++i)
+	{
+		rg_vec3_set(&center, centers[i][0], centers[i][1], centers[i][2]);
+		rg_vec3_set(&extents, half[i][0], half[i][1], half[i][2]);
+		rg_aabb_from_center_extents(&box, &center, &extents);
+		CHECK(rg_aabb_in_frustum(&box, &frustum) == expected[i]);
+		CHECK(rg_aabb_in_frustum_soa(&box, &soa) == expected[i]);
+		CHECK(rg_frustum_cull_aabbs(&soa, &box, 1, flags) == (size_t)expected[i]);
+		CHECK(flags[0] == (u8)expected[i]);
+		// A sphere with the box's half size classifies the same way.
+		rg_sphere_set(&sphere, &center, half[i][0]);
+		CHECK(rg_sphere_in_frustum(&sphere, &frustum) == expected[i]);
+		CHECK(rg_sphere_in_frustum_soa(&sphere, &soa) == expected[i]);
+	}
+	// Sphere straddling by less than its radius is visible; by more it is culled.
+	rg_vec3_set(&center, 10.0f + 0.5f, 0, -10);
+	rg_sphere_set(&sphere, &center, 1.0f);
+	CHECK(rg_sphere_in_frustum(&sphere, &frustum));
+	rg_vec3_set(&center, 10.0f + 1.5f, 0, -10);
+	rg_sphere_set(&sphere, &center, 1.0f);
+	CHECK(!rg_sphere_in_frustum(&sphere, &frustum));
+	rg_sphere_set(&sphere, &center, 0.0f);
+	CHECK(!rg_sphere_in_frustum_soa(&sphere, &soa));
+
+	// Random boxes: f64 reference, SoA/batch agreement, odd counts, count 0.
+	for (i32 iteration = 0; iteration < 40; ++iteration)
+	{
+		for (i32 k = 0; k < BOX_COUNT; ++k)
+		{
+			rg_vec3_set(&center, test_random_range(-40, 40), test_random_range(-40, 40), test_random_range(-110, 10));
+			rg_vec3_set(&extents, test_random_range(0, 4), test_random_range(0, 4), test_random_range(0, 4));
+			if ((k & 7) == 0) extents.data[k % 3] = 0.0f;
+			if ((k & 15) == 1) rg_vec3_set(&extents, 60, 60, 60);
+			rg_aabb_from_center_extents(&boxes[k], &center, &extents);
+			rg_sphere_set(&spheres[k], &center, test_random_range(0, 6));
+		}
+		size_t count = (size_t)(iteration % 4 == 0 ? BOX_COUNT : (iteration % 4 == 1 ? 8 : (iteration % 4 == 2 ? 9 : 3)));
+		size_t visible = rg_frustum_cull_aabbs(&soa, boxes, count, flags);
+		size_t expected_visible = 0;
+		for (size_t k = 0; k < count; ++k)
+		{
+			f64 margin;
+			int single = rg_aabb_in_frustum(&boxes[k], &frustum);
+			int reference = reference_aabb_in_frustum(&boxes[k], &frustum, &margin);
+			CHECK(rg_aabb_in_frustum_soa(&boxes[k], &soa) == single);
+			CHECK(flags[k] == (u8)single);
+			if (margin > 1e-3) CHECK(single == reference);
+			expected_visible += (size_t)single;
+		}
+		CHECK(visible == expected_visible);
+		visible = rg_frustum_cull_spheres(&soa, spheres, count, flags);
+		expected_visible = 0;
+		for (size_t k = 0; k < count; ++k)
+		{
+			f64 margin;
+			int single = rg_sphere_in_frustum(&spheres[k], &frustum);
+			int reference = reference_sphere_in_frustum(&spheres[k], &frustum, &margin);
+			CHECK(rg_sphere_in_frustum_soa(&spheres[k], &soa) == single);
+			CHECK(flags[k] == (u8)single);
+			if (margin > 1e-3) CHECK(single == reference);
+			expected_visible += (size_t)single;
+		}
+		CHECK(visible == expected_visible);
+	}
+	flags[0] = 7;
+	CHECK(rg_frustum_cull_aabbs(&soa, boxes, 0, flags) == 0);
+	CHECK(rg_frustum_cull_spheres(&soa, spheres, 0, flags) == 0);
+	CHECK(flags[0] == 7);
+}
+
+static void reference_slerp(const rg_quat* a, const rg_quat* b, f64 t, f64 out[4])
+{
+	f64 av[4] = {a->x, a->y, a->z, a->w}, bv[4] = {b->x, b->y, b->z, b->w};
+	f64 cos_theta = av[0] * bv[0] + av[1] * bv[1] + av[2] * bv[2] + av[3] * bv[3];
+	f64 angle, sin_theta, w0, w1, len = 0.0;
+	if (cos_theta < 0.0)
+	{
+		cos_theta = -cos_theta;
+		for (i32 k = 0; k < 4; ++k) bv[k] = -bv[k];
+	}
+	if (cos_theta > 1.0) cos_theta = 1.0;
+	angle = acos(cos_theta);
+	sin_theta = sin(angle);
+	if (sin_theta < 1e-9) { w0 = 1.0 - t; w1 = t; }
+	else { w0 = sin((1.0 - t) * angle) / sin_theta; w1 = sin(t * angle) / sin_theta; }
+	for (i32 k = 0; k < 4; ++k) { out[k] = av[k] * w0 + bv[k] * w1; len += out[k] * out[k]; }
+	len = sqrt(len);
+	for (i32 k = 0; k < 4; ++k) out[k] /= len;
+}
+
+static void test_random_unit_quat(rg_quat* q)
+{
+	rg_vec3 axis = rg_vec3(test_random_range(-1, 1), test_random_range(-1, 1), test_random_range(-1, 1));
+	f64 len;
+	rg_vec3_normalize(&axis, &axis);
+	rg_quat_from_axis_angle(test_random_range(-RG_PI, RG_PI), &axis, q);
+	len = sqrt((f64)q->x * q->x + (f64)q->y * q->y + (f64)q->z * q->z + (f64)q->w * q->w);
+	q->x = (f32)(q->x / len);
+	q->y = (f32)(q->y / len);
+	q->z = (f32)(q->z / len);
+	q->w = (f32)(q->w / len);
+}
+
+static void test_quat_slerp(void)
+{
+	rg_vec3 axis = rg_vec3(0, 0, 1);
+	rg_quat identity, quarter, eighth, out;
+	rg_quat_identity(&identity);
+	rg_quat_from_axis_angle(RG_HALF_PI, &axis, &quarter);
+	rg_quat_from_axis_angle(RG_HALF_PI * 0.5f, &axis, &eighth);
+
+	rg_quat_slerp(&identity, &quarter, 0.5f, &out);
+	CHECK_CLOSE(out.x, eighth.x, 1e-5f);
+	CHECK_CLOSE(out.y, eighth.y, 1e-5f);
+	CHECK_CLOSE(out.z, eighth.z, 1e-5f);
+	CHECK_CLOSE(out.w, eighth.w, 1e-5f);
+	rg_quat_slerp(&identity, &quarter, 0.0f, &out);
+	CHECK_CLOSE(rg_quat_dot(&out, &identity), 1.0f, 1e-5f);
+	rg_quat_slerp(&identity, &quarter, 1.0f, &out);
+	CHECK_CLOSE(rg_quat_dot(&out, &quarter), 1.0f, 1e-5f);
+	// The shorter arc is taken when the inputs lie in opposite hemispheres.
+	{
+		rg_quat negated;
+		rg_quat_set(&negated, -quarter.x, -quarter.y, -quarter.z, -quarter.w);
+		rg_quat_slerp(&identity, &negated, 0.5f, &out);
+		CHECK(rg_quat_dot(&out, &identity) > 0.0f);
+		CHECK_CLOSE(fabsf(rg_quat_dot(&out, &eighth)), 1.0f, 1e-6f);
+	}
+	// Random pairs against an f64 reference, including nearly identical and
+	// antipodal pairs, the interpolation endpoints, and extrapolation.
+	for (i32 i = 0; i < 2000; ++i)
+	{
+		rg_quat a, b;
+		f64 reference[4], len = 0.0;
+		f32 t = test_random_unit();
+		test_random_unit_quat(&a);
+		test_random_unit_quat(&b);
+		if (i % 10 == 0)
+		{
+			f64 blen;
+			b = a;
+			b.x += test_random_range(-0.01f, 0.01f);
+			b.w += test_random_range(-0.01f, 0.01f);
+			blen = sqrt((f64)b.x * b.x + (f64)b.y * b.y + (f64)b.z * b.z + (f64)b.w * b.w);
+			b.x = (f32)(b.x / blen); b.y = (f32)(b.y / blen); b.z = (f32)(b.z / blen); b.w = (f32)(b.w / blen);
+		}
+		if (i % 10 == 1) rg_quat_set(&b, -b.x, -b.y, -b.z, -b.w);
+		if (i % 20 == 2) t = 0.0f;
+		if (i % 20 == 3) t = 1.0f;
+		rg_quat_slerp(&a, &b, t, &out);
+		reference_slerp(&a, &b, t, reference);
+		for (i32 k = 0; k < 4; ++k)
+		{
+			CHECK_CLOSE(out.data[k], reference[k], 1e-5f);
+			len += (f64)out.data[k] * out.data[k];
+		}
+		CHECK_CLOSE(sqrt(len), 1.0, 1e-5);
+		t = test_random_range(-1.0f, 2.0f);
+		rg_quat_slerp(&a, &b, t, &out);
+		reference_slerp(&a, &b, t, reference);
+		for (i32 k = 0; k < 4; ++k)
+			CHECK_CLOSE(out.data[k], reference[k], 1e-4f);
+	}
+}
+
+static void test_regressions(void)
+{
+	// Frustum culling must stay exact for boxes whose extent rounds away at
+	// large coordinates: this box touches the x <= 1000000.0625 plane.
+	{
+		rg_frustum frustum;
+		rg_frustum_soa soa;
+		rg_aabb box;
+		rg_aabb boxes[9];
+		u8 flags[9];
+		const f32 bound = 1000000.0625f;
+		for (i32 i = 0; i < RG_FRUSTUM_PLANE_COUNT; ++i)
+		{
+			rg_vec3_set(&frustum.planes[i].normal, 0.0f, 0.0f, 0.0f);
+			frustum.planes[i].d = 1e9f;
+		}
+		rg_vec3_set(&frustum.planes[0].normal, -1.0f, 0.0f, 0.0f);
+		frustum.planes[0].d = bound;
+		rg_vec3_set(&frustum.planes[1].normal, 0.0f, -1.0f, 0.0f);
+		frustum.planes[1].d = bound;
+		rg_vec3_set(&frustum.planes[2].normal, 1.0f, 0.0f, 0.0f);
+		frustum.planes[2].d = 0.0f;
+		rg_vec3_set(&box.min, bound, bound, -1.0f);
+		rg_vec3_set(&box.max, bound + 0.0625f, bound + 0.0625f, 1.0f);
+		CHECK(rg_aabb_in_frustum(&box, &frustum));
+		rg_frustum_soa_from_frustum(&frustum, &soa);
+		CHECK(rg_aabb_in_frustum_soa(&box, &soa));
+		for (i32 i = 0; i < 9; ++i) boxes[i] = box;
+		CHECK(rg_frustum_cull_aabbs(&soa, boxes, 9, flags) == 9u);
+		// One ulp past the plane is outside on every path.
+		box.min.x = bound + 0.0625f;
+		box.max.x = bound + 0.125f;
+		CHECK(!rg_aabb_in_frustum(&box, &frustum));
+		CHECK(!rg_aabb_in_frustum_soa(&box, &soa));
+		for (i32 i = 0; i < 9; ++i) boxes[i] = box;
+		CHECK(rg_frustum_cull_aabbs(&soa, boxes, 9, flags) == 0u);
+	}
+
+	// Parallel slabs are unbounded: a ray from very far away still hits.
+	{
+		rg_aabb box;
+		rg_ray ray;
+		rg_ray_inv inv;
+		f32 tmin = 0.0f, tmax = 0.0f;
+		rg_vec3_set(&box.min, -1.0f, -1.0f, -1.0f);
+		rg_vec3_set(&box.max, 1.0f, 1.0f, 1.0f);
+		rg_vec3_set(&ray.origin, 0.0f, 0.0f, -1e31f);
+		rg_vec3_set(&ray.dir, 0.0f, 0.0f, 1.0f);
+		CHECK(rg_ray_aabb(&ray, &box, &tmin, &tmax));
+		CHECK(tmin > 0.0f && tmax >= tmin);
+		rg_ray_inv_make(&inv, &ray);
+		CHECK(rg_ray_inv_aabb(&inv, &box, &tmin, &tmax));
+	}
+
+#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+	// Normalization of tiny vectors must not underflow with flush-to-zero on
+	// (checked builds treat such vectors as zero-length by design).
+	{
+		const unsigned int csr = _mm_getcsr();
+		rg_vec3 v, n;
+		rg_vec4 v4, n4;
+		f64 len;
+		_mm_setcsr(csr | 0x8000u); // FTZ
+		rg_vec3_set(&v, 1.3278711e-19f, 0.0f, 0.0f);
+		rg_vec3_normalize(&v, &n);
+		len = sqrt((f64)n.x * n.x + (f64)n.y * n.y + (f64)n.z * n.z);
+		CHECK(len > 0.999 && len < 1.001);
+		rg_vec4_set(&v4, 0.0f, 2.0e-19f, 0.0f, 0.0f);
+		rg_vec4_normalize(&v4, &n4);
+		len = sqrt((f64)n4.x * n4.x + (f64)n4.y * n4.y + (f64)n4.z * n4.z + (f64)n4.w * n4.w);
+		CHECK(len > 0.999 && len < 1.001);
+		CHECK(rg_rsqrtf(2.0e-38f) > 0.999f * 7.0710678e18f && rg_rsqrtf(2.0e-38f) < 1.001f * 7.0710678e18f);
+		_mm_setcsr(csr);
+	}
+#endif
+
+	// rg_vec4_floor: negative non-integers, signed zero, and magnitudes beyond 2^31.
+	{
+		rg_vec4 input, output;
+		rg_vec4_set(&input, -1.5f, -0.25f, -2.75f, -0.001f);
+		rg_vec4_floor(&input, &output);
+		CHECK(output.x == -2.0f && output.y == -1.0f && output.z == -3.0f && output.w == -1.0f);
+		rg_vec4_set(&input, -0.0f, 0.0f, 0.999f, -0.999f);
+		rg_vec4_floor(&input, &output);
+		CHECK(output.x == 0.0f); // +0 or -0 both acceptable
+		CHECK(output.y == 0.0f && output.z == 0.0f && output.w == -1.0f);
+		rg_vec4_set(&input, 2147483648.0f, 3e9f, 1e10f, 1e30f);
+		rg_vec4_floor(&input, &output);
+		CHECK(output.x == 2147483648.0f && output.y == 3e9f && output.z == 1e10f && output.w == 1e30f);
+		rg_vec4_set(&input, -2147483648.0f, -3e9f, -1e10f, -FLT_MAX);
+		rg_vec4_floor(&input, &output);
+		CHECK(output.x == -2147483648.0f && output.y == -3e9f && output.z == -1e10f && output.w == -FLT_MAX);
+		rg_vec4_set(&input, 8388607.5f, -8388607.5f, 16777216.0f, -16777217.0f);
+		rg_vec4_floor(&input, &output);
+		CHECK(output.x == 8388607.0f && output.y == -8388608.0f && output.z == 16777216.0f && output.w == -16777216.0f);
+	}
+	// Normalization length error (vec3, vec4, quat) in the refined rsqrt mode. The
+	// SSE estimate plus one Newton-Raphson step stays within 1e-6; the scalar
+	// (Quake) estimate is only checked on the refined non-max-performance path.
+#if RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_RSQRT && (defined(RG_MATH_SSE) || !RG_MATH_MAX_PERF)
+#ifdef RG_MATH_SSE
+	const f64 length_tolerance = 1e-6;
+#else
+	const f64 length_tolerance = 1e-5;
+#endif
+	for (i32 i = 0; i < 16; ++i)
+	{
+		f32 scale = (i & 1) ? test_random_range(0.1f, 1.0f) : test_random_range(1.0f, 100.0f);
+		rg_vec3 v3 = rg_vec3(test_random_range(-1, 1) * scale, test_random_range(-1, 1) * scale, test_random_range(-1, 1) * scale), n3;
+		rg_vec4 v4 = rg_vec4(test_random_range(-1, 1) * scale, test_random_range(-1, 1) * scale, test_random_range(-1, 1) * scale, test_random_range(-1, 1) * scale), n4;
+		rg_quat q = {{v4.x, v4.y, v4.z, v4.w}}, nq;
+		rg_vec3_normalize(&v3, &n3);
+		rg_vec4_normalize(&v4, &n4);
+		rg_quat_normalize(&q, &nq);
+		CHECK_CLOSE(sqrt((f64)n3.x * n3.x + (f64)n3.y * n3.y + (f64)n3.z * n3.z), 1.0, length_tolerance);
+		CHECK_CLOSE(sqrt((f64)n4.x * n4.x + (f64)n4.y * n4.y + (f64)n4.z * n4.z + (f64)n4.w * n4.w), 1.0, length_tolerance);
+		CHECK_CLOSE(sqrt((f64)nq.x * nq.x + (f64)nq.y * nq.y + (f64)nq.z * nq.z + (f64)nq.w * nq.w), 1.0, length_tolerance);
+	}
+#endif
+	// rg_mat4_inv of a singular matrix: the assertion fires and no finite inverse results.
+	{
+		rg_mat4 singular, inverse;
+		int asserts_before = math_assert_failures;
+		int finite = 0;
+		rg_mat4_identity(&singular);
+		singular.m[0] = 0.0f; // zero first column
+		rg_mat4_inv(&singular, &inverse);
+		CHECK(math_assert_failures == asserts_before + 1);
+		for (i32 i = 0; i < 16; ++i)
+			finite += isfinite(inverse.m[i]) ? 1 : 0;
+		CHECK(finite == 0);
+		math_assert_failures = asserts_before;
+	}
+}
+
+static void test_noise(void)
+{
+	rg_vec2 p2;
+	rg_vec3 p3;
+	rg_vec4 p4;
+	u32 seed = 0x2545F491u;
+	i32 i;
+
+	// Integer lattice points are exactly zero in every dimension.
+	rg_vec2_set(&p2, 2.0f, -3.0f);
+	CHECK(rg_perlin_vec2(&p2) == 0.0f);
+	rg_vec3_set(&p3, -7.0f, 11.0f, 250.0f);
+	CHECK(rg_perlin_vec3(&p3) == 0.0f);
+	rg_vec4_set(&p4, 1.0f, 0.0f, -1.0f, 1000.0f);
+	CHECK(rg_perlin_vec4(&p4) == 0.0f);
+
+	// Range, determinism, and continuity over pseudo-random points that
+	// straddle cell boundaries (x just below an integer, then x + 1e-4).
+	for (i = 0; i < 4096; ++i)
+	{
+		f32 a, b, x, y, z, w;
+		seed ^= seed << 13;
+		seed ^= seed >> 17;
+		seed ^= seed << 5;
+		x = (f32)(i32)(seed % 400u) - 200.0f - 5e-5f;
+		y = (f32)(seed >> 8) * (1.0f / 16777216.0f) * 50.0f - 25.0f;
+		z = (f32)(seed >> 12) * (1.0f / 1048576.0f) * 50.0f - 25.0f;
+		w = (f32)(seed >> 16) * (1.0f / 65536.0f) * 50.0f - 25.0f;
+
+		rg_vec2_set(&p2, x, y);
+		a = rg_perlin_vec2(&p2);
+		CHECK(a >= -1.0f && a <= 1.0f);
+		CHECK(rg_perlin_vec2(&p2) == a);
+		p2.x += 1e-4f;
+		b = rg_perlin_vec2(&p2);
+		CHECK(fabsf(b - a) <= 8.0f * 1e-4f);
+
+		rg_vec3_set(&p3, x, y, z);
+		a = rg_perlin_vec3(&p3);
+		CHECK(a >= -1.0f && a <= 1.0f);
+		CHECK(rg_perlin_vec3(&p3) == a);
+		p3.x += 1e-4f;
+		b = rg_perlin_vec3(&p3);
+		CHECK(fabsf(b - a) <= 8.0f * 1e-4f);
+
+		rg_vec4_set(&p4, x, y, z, w);
+		a = rg_perlin_vec4(&p4);
+		CHECK(a >= -1.0f && a <= 1.0f);
+		CHECK(rg_perlin_vec4(&p4) == a);
+		p4.x += 1e-4f;
+		b = rg_perlin_vec4(&p4);
+		CHECK(fabsf(b - a) <= 8.0f * 1e-4f);
+	}
+
+	// Regression anchors for the classic-Perlin output (change only if the
+	// permutation/gradient tables or scales change).
+	rg_vec2_set(&p2, 0.5f, 0.5f);
+	CHECK_CLOSE(rg_perlin_vec2(&p2), -0.49995f, 1e-5f);
+	rg_vec3_set(&p3, 1.3f, 2.7f, -0.4f);
+	CHECK_CLOSE(rg_perlin_vec3(&p3), -0.106355f, 1e-5f);
+	rg_vec4_set(&p4, 1.3f, 2.7f, -0.4f, 5.1f);
+	CHECK_CLOSE(rg_perlin_vec4(&p4), 0.0065156f, 1e-5f);
+
+	// Huge and non-finite coordinates stay finite and in range.
+	{
+		const f32 big[] = { 1e6f, -1e6f, 1e7f, -1e7f, 3e9f, -3e9f, 3e38f, -3e38f, INFINITY, -INFINITY };
+		for (i = 0; i < (i32)(sizeof(big) / sizeof(big[0])); ++i)
+		{
+			f32 v;
+			rg_vec2_set(&p2, big[i], 0.37f);
+			v = rg_perlin_vec2(&p2);
+			CHECK(v == v && v >= -1.0f && v <= 1.0f);
+			rg_vec3_set(&p3, 0.37f, big[i], -big[i]);
+			v = rg_perlin_vec3(&p3);
+			CHECK(v == v && v >= -1.0f && v <= 1.0f);
+			rg_vec4_set(&p4, big[i], 0.37f, -big[i], 0.71f);
+			v = rg_perlin_vec4(&p4);
+			CHECK(v == v && v >= -1.0f && v <= 1.0f);
+		}
+		rg_vec3_set(&p3, 1e6f + 0.37f, 0.5f, 0.5f);
+		CHECK(rg_perlin_vec3(&p3) != 0.0f); // still non-degenerate below 2^24
+	}
+}
+
 int main(void)
 {
 	test_layout();
@@ -596,10 +1398,19 @@ int main(void)
 	test_geometry();
 	test_ray_sphere_roots();
 	test_auxiliary_modules();
+	test_noise();
 	test_rotation_round_trips();
 	test_camera_basis();
 	test_projection_and_frustum();
 	test_inverse_and_multiply_contracts();
+	test_ray_aabb();
+	test_ray_inv_aabb();
+	test_ray_triangle();
+	test_aabb_transform();
+	test_frustum_culling();
+	test_quat_slerp();
+	test_regressions();
+	CHECK(math_assert_failures == 0);
 
 	printf("rg_math: %d checks, %d failures (%s)\n",
 	       tests_run,

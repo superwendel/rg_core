@@ -145,6 +145,16 @@ IDs must be nonnegative, convertible to `size_t`, and less than `SIZE_MAX`.
 Removal swaps the final dense ID into the removed slot, so dense order is not
 stable. Clearing a set retains both allocations.
 
+The sparse array holds one dense index per possible ID, so its element type
+sets the set's footprint and how much of it stays in cache during `contains`
+and `remove`. It is `size_t` by default; define `RG_SPARSE_INDEX_TYPE` as
+`uint32_t` to halve it when no set will hold more than 4,294,967,294 IDs. The
+header exposes the chosen type as `RgSparseIndex`. The `sparse` member of a
+sparse-set struct has that type, `RG_SPARSE_INVALID` is converted to it when
+stored, and `rg_sparse_set_index_of` still returns `RG_SPARSE_INVALID` itself
+for missing IDs. Insertion asserts that the dense count fits the index type and
+otherwise leaves the set unchanged.
+
 Sparse-set operations:
 
 - `rg_sparse_set_init`, `rg_sparse_set_clear`, `rg_sparse_set_free`
@@ -202,6 +212,9 @@ Define options before including the header:
 #define RG_CONTAINERS_ASSERT(condition)  // Custom assertion macro
 #define RG_CONTAINERS_MIN_CAP             // Initial growth capacity; default: 8
 #define RG_SPARSE_INVALID                 // Missing dense index; default: SIZE_MAX
+#define RG_SPARSE_INDEX_TYPE              // Sparse-array element type; default: size_t
 ```
 
-`RG_CONTAINERS_MIN_CAP` must be at least one.
+`RG_CONTAINERS_MIN_CAP` must be at least one. `RG_SPARSE_INDEX_TYPE` must be an
+unsigned integer type; it bounds the dense count of every sparse set and is
+the element type of each set's `sparse` array (see [Sparse sets](#sparse-sets)).

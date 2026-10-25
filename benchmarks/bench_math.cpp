@@ -45,6 +45,19 @@ struct MathInputs
 	rg_mat4 projection_no[MATH_BATCH], projection_zo[MATH_BATCH];
 	rg_sphere spheres[MATH_BATCH];
 	rg_ray rays_forward[MATH_BATCH], rays_inside[MATH_BATCH], rays_miss[MATH_BATCH];
+	rg_vec2 noise2[MATH_BATCH];
+	rg_vec3 noise3[MATH_BATCH];
+	rg_vec4 noise4[MATH_BATCH];
+	// Culling and ray-casting inputs: boxes inside the frustum along the view
+	// axis, boxes/spheres scattered around it, rays aimed at and past the boxes.
+	rg_aabb boxes_inside[MATH_BATCH], boxes_mixed[MATH_BATCH];
+	rg_sphere spheres_mixed[MATH_BATCH];
+	rg_ray rays_box_hit[MATH_BATCH], rays_box_miss[MATH_BATCH];
+	rg_ray_inv rays_inv_hit[MATH_BATCH];
+	rg_vec3 tri_a[MATH_BATCH], tri_b[MATH_BATCH], tri_c[MATH_BATCH];
+	f32 t[MATH_BATCH];
+	rg_frustum frustum;
+	rg_frustum_soa frustum_soa;
 };
 
 static MathInputs inputs;
@@ -91,6 +104,15 @@ static f32 random_unit(uint32_t* state)
 static void prepare_inputs(void)
 {
 	uint32_t rng = UINT32_C(0x93E2417B);
+	{
+		rg_vec3 eye = rg_vec3(0, 2, 10), target = rg_vec3(0, 0, 0), up = rg_vec3(0, 1, 0);
+		rg_mat4 view, projection, view_projection;
+		rg_mat4_look_at_rh(&eye, &target, &up, &view);
+		rg_mat4_perspective_rh_no(1.0f, 16.0f / 9.0f, 0.1f, 200.0f, &projection);
+		rg_mat4_mul(&projection, &view, &view_projection);
+		rg_frustum_from_mat4_no(&view_projection, &inputs.frustum);
+		rg_frustum_soa_from_frustum(&inputs.frustum, &inputs.frustum_soa);
+	}
 	for (size_t i = 0; i < MATH_BATCH; ++i)
 	{
 		rg_vec3_set(&inputs.a[i], 0.5f + random_unit(&rng), -0.5f + random_unit(&rng), 0.5f + random_unit(&rng));
@@ -104,6 +126,10 @@ static void prepare_inputs(void)
 		rg_vec4_set(&inputs.v4b[i], inputs.b[i].x, inputs.b[i].y, inputs.b[i].z, random_unit(&rng));
 		inputs.angle[i] = -2.9f + 5.8f * random_unit(&rng);
 		inputs.scalar[i] = 0.5f + random_unit(&rng);
+		// Noise samples span many lattice cells on both sides of the origin.
+		rg_vec2_set(&inputs.noise2[i], 64.0f * random_unit(&rng) - 32.0f, 64.0f * random_unit(&rng) - 32.0f);
+		rg_vec3_set(&inputs.noise3[i], 64.0f * random_unit(&rng) - 32.0f, 64.0f * random_unit(&rng) - 32.0f, 64.0f * random_unit(&rng) - 32.0f);
+		rg_vec4_set(&inputs.noise4[i], 64.0f * random_unit(&rng) - 32.0f, 64.0f * random_unit(&rng) - 32.0f, 64.0f * random_unit(&rng) - 32.0f, 64.0f * random_unit(&rng) - 32.0f);
 		const f32 radius = 1.0f + inputs.scalar[i] * 0.25f;
 		rg_sphere_set(&inputs.spheres[i], &inputs.eye[i], radius);
 		rg_vec3 ray_direction = rg_vec3(0, 0, 1);
@@ -115,6 +141,28 @@ static void prepare_inputs(void)
 		ray_origin = inputs.eye[i];
 		ray_origin.x += 0.25f * radius;
 		rg_ray_set(&inputs.rays_inside[i], &ray_origin, &ray_direction);
+		inputs.t[i] = random_unit(&rng);
+		{
+			rg_vec3 center_inside = rg_vec3(random_unit(&rng) - 0.5f, random_unit(&rng) - 0.5f, 5.0f - 30.0f * random_unit(&rng));
+			rg_vec3 center_mixed = rg_vec3(120.0f * (random_unit(&rng) - 0.5f), 120.0f * (random_unit(&rng) - 0.5f), 120.0f * (random_unit(&rng) - 0.5f));
+			rg_vec3 extents = rg_vec3(0.2f + random_unit(&rng), 0.2f + random_unit(&rng), 0.2f + random_unit(&rng));
+			rg_aabb_from_center_extents(&inputs.boxes_inside[i], &center_inside, &extents);
+			rg_aabb_from_center_extents(&inputs.boxes_mixed[i], &center_mixed, &extents);
+			rg_sphere_set(&inputs.spheres_mixed[i], &center_mixed, extents.x + extents.y);
+			rg_vec3 origin = rg_vec3(center_mixed.x + 30.0f * (random_unit(&rng) - 0.5f), center_mixed.y + 30.0f * (random_unit(&rng) - 0.5f), center_mixed.z + 30.0f * (random_unit(&rng) - 0.5f));
+			rg_vec3 toward, sideways;
+			rg_vec3_sub(&center_mixed, &origin, &toward);
+			rg_vec3_normalize(&toward, &toward);
+			rg_vec3_set(&sideways, -toward.y, toward.x, toward.z);
+			rg_vec3_normalize(&sideways, &sideways);
+			rg_ray_set(&inputs.rays_box_hit[i], &origin, &toward);
+			rg_ray_set(&inputs.rays_box_miss[i], &origin, &sideways);
+			rg_ray_inv_make(&inputs.rays_inv_hit[i], &inputs.rays_box_hit[i]);
+			// Triangle around the box center so the hit rays mostly hit it.
+			rg_vec3_set(&inputs.tri_a[i], center_mixed.x - 2.0f, center_mixed.y - 2.0f, center_mixed.z);
+			rg_vec3_set(&inputs.tri_b[i], center_mixed.x + 2.0f, center_mixed.y - 2.0f, center_mixed.z + 0.5f);
+			rg_vec3_set(&inputs.tri_c[i], center_mixed.x, center_mixed.y + 2.0f, center_mixed.z - 0.5f);
+		}
 		rg_vec3 axis = inputs.direction[i];
 		// Principal axes plus mixed rotations exercise all extraction branches.
 		if ((i & 3u) != 3u)
@@ -221,6 +269,9 @@ struct TrsResult { rg_vec3 translation; rg_quat rotation; rg_vec3 scale; };
 struct ProjectionResult { f32 near_z, far_z, top, bottom, left, right; };
 struct AxisResult { f32 first, second; };
 struct RaySphereResult { f32 near_t, far_t; int hit; };
+struct RayTriangleResult { f32 t; int hit; };
+struct CullResult { u8 flags[8]; };
+struct RayBatchResult { f32 tmins[8]; u8 flags[8]; size_t hits; };
 
 int main(int argc, char** argv)
 {
@@ -282,9 +333,51 @@ int main(int argc, char** argv)
 	run_case<rg_frustum>("math.frustum_extract_no", [](size_t i, rg_frustum* r) { rg_frustum_from_mat4_no(&inputs.projection_no[i], r); });
 	run_case<rg_frustum>("math.frustum_extract_zo", [](size_t i, rg_frustum* r) { rg_frustum_from_mat4_zo(&inputs.projection_zo[i], r); });
 	run_case<rg_mat4>("math.mat4_inv_tr", [](size_t i, rg_mat4* r) { rg_mat4_inv_tr(&inputs.matrices[0][i], r); });
-	run_case<rg_mat4>("math.mat4_inv_rigid", [](size_t i, rg_mat4* r) { rg_mat4_inv_tr(&inputs.matrices[0][i], r); });
+	run_case<rg_mat4>("math.mat4_inv_affine", [](size_t i, rg_mat4* r) { rg_mat4_inv_affine(&inputs.matrices[0][i], r); });
+	run_case<rg_mat4>("math.mat4_inv", [](size_t i, rg_mat4* r) { rg_mat4_inv(&inputs.trs[i], r); });
+	run_case<rg_mat4>("math.mat4_trs_make", [](size_t i, rg_mat4* r) { rg_mat4_trs_make(r, &inputs.eye[i], &inputs.q0[i], &inputs.a[i]); });
+	run_case<rg_mat4>("math.mat4_from_quat", [](size_t i, rg_mat4* r) { rg_mat4_from_quat(r, &inputs.q0[i]); });
 	run_case<rg_mat4>("math.mat4_mul4", [](size_t i, rg_mat4* r) { rg_mat4_mul4(&inputs.matrices[0][i], &inputs.matrices[1][i], &inputs.matrices[2][i], &inputs.matrices[3][i], r); });
 	run_case<rg_mat4>("math.mat4_mul4_aligned32", [](size_t i, rg_mat4* r) { rg_mat4_mul4_aligned32(&inputs.matrices[0][i], &inputs.matrices[1][i], &inputs.matrices[2][i], &inputs.matrices[3][i], r); });
+	run_case<rg_vec3>("math.vec3_floor", [](size_t i, rg_vec3* r) { rg_vec3_floor(&inputs.a[i], r); });
+	run_case<f32>("math.rsqrtf", [](size_t i, f32* r) { *r = rg_rsqrtf(inputs.scalar[i] * inputs.scalar[i] + 1.0f); });
+
+	// Classic Perlin noise (integer permutation hashing, scalar).
+	run_case<f32>("math.perlin_vec2", [](size_t i, f32* r) { *r = rg_perlin_vec2(&inputs.noise2[i]); });
+	run_case<f32>("math.perlin_vec3", [](size_t i, f32* r) { *r = rg_perlin_vec3(&inputs.noise3[i]); });
+	run_case<f32>("math.perlin_vec4", [](size_t i, f32* r) { *r = rg_perlin_vec4(&inputs.noise4[i]); });
+
+	// Interpolation, culling, and ray casting. The *8 cases process eight
+	// objects per operation; divide the reported ns/op by 8 for the per-object cost.
+	run_case<rg_quat>("math.quat_slerp", [](size_t i, rg_quat* r) { rg_quat_slerp(&inputs.q0[i], &inputs.q1[i], inputs.t[i], r); });
+	run_case<rg_quat>("math.quat_slerp_fast", [](size_t i, rg_quat* r) { rg_quat_slerp_fast(&inputs.q0[i], &inputs.q1[i], inputs.t[i], r); });
+	run_case<rg_quat>("math.quat_nlerp", [](size_t i, rg_quat* r) { rg_quat_nlerp(&inputs.q0[i], &inputs.q1[i], inputs.t[i], r); });
+	run_case<rg_aabb>("math.aabb_transform", [](size_t i, rg_aabb* r) { rg_aabb_transform(&inputs.boxes_mixed[i], &inputs.rotation[i], r); });
+	run_case<int>("math.aabb_in_frustum_inside", [](size_t i, int* r) { *r = rg_aabb_in_frustum(&inputs.boxes_inside[i], &inputs.frustum); });
+	run_case<int>("math.aabb_in_frustum_mixed", [](size_t i, int* r) { *r = rg_aabb_in_frustum(&inputs.boxes_mixed[i], &inputs.frustum); });
+	run_case<int>("math.aabb_in_frustum_soa", [](size_t i, int* r) { *r = rg_aabb_in_frustum_soa(&inputs.boxes_mixed[i], &inputs.frustum_soa); });
+	run_case<CullResult>("math.frustum_cull_aabbs8", [](size_t i, CullResult* r) { rg_frustum_cull_aabbs(&inputs.frustum_soa, &inputs.boxes_mixed[(i * 8) % MATH_BATCH], 8, r->flags); });
+	run_case<int>("math.sphere_in_frustum", [](size_t i, int* r) { *r = rg_sphere_in_frustum(&inputs.spheres_mixed[i], &inputs.frustum); });
+	run_case<int>("math.sphere_in_frustum_soa", [](size_t i, int* r) { *r = rg_sphere_in_frustum_soa(&inputs.spheres_mixed[i], &inputs.frustum_soa); });
+	run_case<CullResult>("math.frustum_cull_spheres8", [](size_t i, CullResult* r) { rg_frustum_cull_spheres(&inputs.frustum_soa, &inputs.spheres_mixed[(i * 8) % MATH_BATCH], 8, r->flags); });
+	run_case<RaySphereResult>("math.ray_aabb_hit", [](size_t i, RaySphereResult* r) {
+		r->near_t = r->far_t = 0.0f;
+		r->hit = rg_ray_aabb(&inputs.rays_box_hit[i], &inputs.boxes_mixed[i], &r->near_t, &r->far_t);
+	});
+	run_case<RaySphereResult>("math.ray_aabb_miss", [](size_t i, RaySphereResult* r) {
+		r->near_t = r->far_t = 0.0f;
+		r->hit = rg_ray_aabb(&inputs.rays_box_miss[i], &inputs.boxes_mixed[i], &r->near_t, &r->far_t);
+	});
+	run_case<RaySphereResult>("math.ray_inv_aabb", [](size_t i, RaySphereResult* r) { r->hit = rg_ray_inv_aabb(&inputs.rays_inv_hit[i], &inputs.boxes_mixed[i], &r->near_t, &r->far_t); });
+	run_case<RayBatchResult>("math.ray_inv_aabbs8", [](size_t i, RayBatchResult* r) { r->hits = rg_ray_inv_aabbs(&inputs.rays_inv_hit[i], &inputs.boxes_mixed[(i * 8) % MATH_BATCH], 8, r->tmins, r->flags); });
+	run_case<RayTriangleResult>("math.ray_triangle_hit", [](size_t i, RayTriangleResult* r) {
+		r->t = 0.0f;
+		r->hit = rg_ray_triangle(&inputs.rays_box_hit[i], &inputs.tri_a[i], &inputs.tri_b[i], &inputs.tri_c[i], &r->t);
+	});
+	run_case<RayTriangleResult>("math.ray_triangle_miss", [](size_t i, RayTriangleResult* r) {
+		r->t = 0.0f;
+		r->hit = rg_ray_triangle(&inputs.rays_box_miss[i], &inputs.tri_a[i], &inputs.tri_b[i], &inputs.tri_c[i], &r->t);
+	});
 
 #ifdef RG_BENCH_CGLM
 	run_case<vec3>("cglm.vec3_add", [](size_t i, vec3* r) { glm_vec3_add(cglm_inputs.a[i], cglm_inputs.b[i], *r); });

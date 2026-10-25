@@ -41,6 +41,14 @@ Define options before including the header:
 Messages that exceed the buffer are truncated while retaining a final newline
 and null terminator.
 
+With `RG_LOG_TIMESTAMP`, each thread caches the formatted `HH:MM:SS` text and
+only calls `localtime` again when the second changes, so the timestamp adds a
+`time()` call rather than a microsecond of calendar conversion to every line.
+The cache is thread-local and the conversion uses `localtime_r` or MSVC's
+`localtime_s` when the build exposes them (the native build script's
+`-D_POSIX_C_SOURCE=200809L` does), so the option does not add shared mutable
+state to the logger.
+
 ## API
 
 ```c
@@ -57,6 +65,9 @@ RG_CRIT("Out of memory");
 
 Levels range from `RG_LOG_DEBUG` through `RG_LOG_CRIT`; `RG_LOG_NONE` disables
 all messages. Filtered macro calls do not evaluate their formatting arguments.
+The macros compare the level inline against the logger's level variable and
+call out of line only for messages that pass, so a filtered `RG_DEBUG` is a
+single predictable branch and each call site is a few dozen bytes.
 
 ## Output
 

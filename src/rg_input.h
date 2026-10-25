@@ -21,6 +21,7 @@
 // OPTIONS:
 //   #define RG_INPUT_TEXT_BUFFER_SIZE  - Text input buffer size (default: 32)
 //   #define RG_INPUT_ASSERT(x)         - Custom assert macro (default: assert)
+//   #define RG_INPUT_NO_SIMD           - Copy key state without SSE2
 //
 // NOTES:
 //   - All functions have internal linkage and work in unity builds.
@@ -54,6 +55,17 @@
 
 #ifndef RG_INPUT_UNUSED
 #define RG_INPUT_UNUSED(x) (void)(x)
+#endif
+
+// SDL's key-state array is only 2-byte aligned, and compilers lower the
+// 512-byte memcpy of it to a misaligned rep movs that costs several times an
+// explicit 16-byte loop. SSE2 is baseline on x86-64.
+#if !defined(RG_INPUT_NO_SIMD) && \
+    (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+#define RG_INPUT_HAS_SSE2 1
+#include <emmintrin.h>
+#else
+#define RG_INPUT_HAS_SSE2 0
 #endif
 
 // Mouse button indices (for rg_input_is_mouse_button_*)
@@ -345,11 +357,35 @@ RGINLINE void rg_input_init(RgInputState* input)
 	memset(input, 0, sizeof(*input));
 }
 
+// Copy one SDL_SCANCODE_COUNT key-state array to another.
+RGINLINE void rg_input_copy_keys(bool* RG_RESTRICT dst, const bool* RG_RESTRICT src)
+{
+	const size_t bytes = sizeof(bool) * (size_t)SDL_SCANCODE_COUNT;
+	u8* RG_RESTRICT out = (u8*)dst;
+	const u8* RG_RESTRICT in = (const u8*)src;
+	size_t offset = 0;
+#if RG_INPUT_HAS_SSE2
+	for (; offset + 16u <= bytes; offset += 16u)
+	{
+		_mm_storeu_si128((__m128i*)(out + offset),
+		                 _mm_loadu_si128((const __m128i*)(in + offset)));
+	}
+#else
+	for (; offset + 8u <= bytes; offset += 8u)
+	{
+		u64 chunk;
+		memcpy(&chunk, in + offset, sizeof(chunk));
+		memcpy(out + offset, &chunk, sizeof(chunk));
+	}
+#endif
+	if (offset < bytes) memcpy(out + offset, in + offset, bytes - offset);
+}
+
 RGINLINE void rg_input_begin_frame(RgInputState* input)
 {
 	RG_INPUT_ASSERT(input != NULL);
 
-	memcpy(input->previous_keyboard, input->current_keyboard, sizeof(input->current_keyboard));
+	rg_input_copy_keys(input->previous_keyboard, input->current_keyboard);
 	memcpy(input->previous_mouse, input->current_mouse, sizeof(input->current_mouse));
 
 	input->has_text_input = false;
@@ -362,7 +398,7 @@ RGINLINE void rg_input_sample(RgInputState* input)
 	RG_INPUT_ASSERT(input != NULL);
 
 	const bool* keyboard = SDL_GetKeyboardState(NULL);
-	memcpy(input->current_keyboard, keyboard, sizeof(input->current_keyboard));
+	rg_input_copy_keys(input->current_keyboard, keyboard);
 
 	SDL_MouseButtonFlags mouse_state;
 	if (input->relative_mouse_enabled)

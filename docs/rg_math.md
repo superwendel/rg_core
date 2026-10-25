@@ -40,7 +40,7 @@ modules can also be included directly:
 - `rg_math_curve.h` — Bezier, spline, and easing helpers.
 - `rg_math_geom.h` — geometric primitives, bounds, and intersections.
 - `rg_math_io.h` — configurable debug printing.
-- `rg_math_noise.h` — periodic and non-periodic Perlin noise.
+- `rg_math_noise.h` — classic Perlin gradient noise in 2D, 3D, and 4D.
 
 To trim the umbrella, define any of these before including `rg_math.h`:
 
@@ -95,8 +95,9 @@ Both four-matrix multiplication functions allow the output to alias any input.
 ## Performance and safety modes
 
 `RG_MATH_MAX_PERF` defaults to `1`. This selects the library's fastest paths,
-including approximate reciprocal square root for normalization, and removes
-some zero-length and validity checks. In this mode:
+including hardware reciprocal square root for normalization (refined by one
+Newton-Raphson step, see `RG_MATH_RSQRT_MODE` below), and removes some
+zero-length and validity checks. In this mode:
 
 - Pass normalized axes, normals, and quaternions to APIs that document that requirement.
 - Initialize `rg_vec3` values with `rg_vec3_set` or explicitly initialize `_pad`
@@ -123,7 +124,18 @@ Additional configuration:
 - `RG_MATH_LIBC_ALIASES` allows direct macro wrappers when libc is enabled.
 - `RG_MATH_FAST_MATH`, `RG_MATH_FAST_TRIG`, and `RG_MATH_FAST_EXP` opt into
   lower-precision approximations for the corresponding scalar wrappers.
-- `RG_MATH_RSQRT_MODE` selects reciprocal-square-root implementation details.
+- `RG_MATH_RSQRT_MODE` selects how `rg_rsqrtf`, `rg_rsqrtf_fast`, and every
+  SIMD normalization compute the reciprocal square root in max-performance
+  builds. `RG_MATH_RSQRT_MODE_RSQRT` (default) uses the hardware estimate plus
+  one Newton-Raphson step (relative error about 2.4e-7, so normalized vectors and
+  quaternions have unit length to within 3e-7). `RG_MATH_RSQRT_MODE_SQRT_RCP`
+  uses `rcp(sqrt(x))`. `RG_MATH_RSQRT_MODE_RSQRT_RAW` uses the unrefined hardware
+  estimate (relative error about 3e-4); it saves roughly 1 ns per normalization
+  and 10 ns in chains such as `look_at` and frustum extraction, at the cost of
+  visible drift when renormalizing repeatedly.
+- `RG_MATH_SINCOS_POLY` forces the max-performance `rg_sincosf` polynomial. By
+  default, baseline (non-FMA) builds on glibc call `sincosf` instead because it
+  is faster there; FMA builds and other libcs always use the polynomial.
 - `RG_MATH_VEC3_PLAIN` and `RG_MATH_VEC4_PLAIN` omit the `__m128` union member
   while retaining an aligned four-component array layout.
 
@@ -196,6 +208,89 @@ On MSVC x64 AVX2 builds, the hybrid formatter selects its ASM backend by
 default. Link the helper described in [formatter integration](rg_sprintf.md#integration),
 or define `RG_SPRINTF_NO_ASM` before the first formatter-related include to use
 portable C for debug printing.
+
+### Culling and ray queries
+
+`rg_aabb_in_frustum` and `rg_sphere_in_frustum` are branch-free. The box test
+evaluates `n·p + d` per plane, where `p` is the corner selected by the signs of
+the normal, so it is exact even for boxes whose extent is below float
+resolution at their coordinates. For many objects per frustum convert the planes
+once with `rg_frustum_soa_from_frustum` into an `rg_frustum_soa` (32-byte
+aligned, six planes padded to eight lanes) and use:
+
+- `rg_aabb_in_frustum_soa(aabb, soa)` / `rg_sphere_in_frustum_soa(sphere, soa)`
+  give the same results as the `rg_frustum` variants.
+- `size_t rg_frustum_cull_aabbs(soa, boxes, count, out)` and
+  `size_t rg_frustum_cull_spheres(soa, spheres, count, out)` write one byte
+  per object (1 = intersecting or inside) and return the visible count. Any
+  `count` is allowed, including 0. AVX builds test eight boxes at a time; every
+  path gives identical flags for the same build.
+
+`rg_ray_aabb` is a branchless slab test. Direction components may be zero
+(including `-0.0`); a ray lying exactly in a face plane counts as touching the
+box. `tmin`/`tmax` are written whenever the slab intervals overlap, which
+includes a box entirely behind the origin (the call then returns 0); they are
+left untouched when the slabs do not overlap. For many boxes per ray
+precompute the reciprocal direction:
+
+```c
+rg_ray_inv inv;
+rg_ray_inv_make(&inv, &ray);
+int hit = rg_ray_inv_aabb(&inv, &box, &tmin, &tmax);              // tmin/tmax always written
+size_t hits = rg_ray_inv_aabbs(&inv, boxes, count, tmins, flags); // tmins may be NULL
+```
+
+`rg_ray_triangle` defers its division until after the barycentric rejects;
+hits, misses, and `t` are unchanged within rounding.
+
+### Accuracy notes
+
+- `rg_quat_slerp` (max-performance mode) uses a polynomial arccosine accurate
+  to 2e-8 rad and evaluates `sin`/`cos` of `t * angle` without range reduction
+  for `0 <= t <= 1`; results match a double-precision slerp to about 5e-7 per
+  component. Values of `t` outside `[0, 1]` still work through the
+  range-reduced path.
+- Quaternion and vector normalization use the `RG_MATH_RSQRT_MODE` reciprocal
+  square root; in the default mode the length error is about 3e-7 instead of
+  the 3e-4 of the raw hardware estimate.
+- `rg_frustum_from_mat4*` initialize `normal._pad` of every plane to 0.
+- `rg_vec4_floor` and `rg_vec3_floor` match `floorf` bit for bit, including the
+  sign of zero, in every build.
+
+## Noise
+
+`rg_perlin_vec2`, `rg_perlin_vec3`, and `rg_perlin_vec4` implement Ken Perlin's
+improved (2002) gradient noise: integer lattice hashing through the reference
+256-entry permutation table (`p[p[p[X] + Y] + Z]`), a quintic fade, and
+branch-free gradient selection from fixed edge-direction tables (8 directions in
+2D, the 12 cube edges in 3D, the 32 tesseract edges in 4D). The lattice repeats
+every 256 units on each axis.
+
+Guarantees:
+
+- Output is always within `[-1, 1]` for every finite input. The raw noise is
+  scaled by `0.9999`, `0.9649`, and `0.6507` (2D, 3D, 4D), which are the
+  reciprocals of each gradient set's provable peak, so no permutation or
+  rounding can exceed the range. The realised extremes with the built-in
+  permutation are about ±1.0 (2D), ±1.0 (3D), and ±0.77 (4D); standard
+  deviations over uniform samples are about 0.27, 0.26, and 0.19.
+- Integer lattice points evaluate to exactly `0`.
+- Values are deterministic and C2-continuous (the fade has zero first and
+  second derivatives at cell boundaries).
+- Coordinates are evaluated in `f32`. A coordinate whose magnitude exceeds
+  2^24 is already integral, so the noise degenerates along that axis; inputs
+  beyond ±2^30 are clamped before the lattice lookup, so huge or infinite
+  coordinates still produce finite in-range values. NaN input yields an
+  unspecified finite value.
+
+The hot path contains no `floorf`/`fmodf` calls or vector ops; it is scalar
+integer hashing plus a handful of multiplies, roughly 7x faster than the
+previous GLSL-derived implementation on SSE2 builds and 4x on AVX2 builds.
+
+**Versioned output change**: earlier releases ported the GLSL `mod289`
+float-hash Perlin noise, whose values differed and could exceed ±1 (up to
+about ±1.2 in 3D/4D). Anything that baked noise from the old implementation
+(terrain, textures, seeds) will see different values after upgrading.
 
 ## Performance
 

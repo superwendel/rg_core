@@ -41,7 +41,7 @@
 //   #define RG_MATH_FAST_MATH    - Optional: use faster (less accurate) sqrt; affects rg_sqrtf and rg_vec*_len.
 //   #define RG_MATH_FAST_EXP     - Use fast exp/log/pow approximations.
 //   #define RG_MATH_FAST_TRIG    - Use fast sin/cos/asin/acos/atan/atan2 approximations for scalar wrapper names.
-//   #define RG_MATH_RSQRT_MODE   - Override rsqrt mode (see RG_MATH_RSQRT_MODE_* below)
+//   #define RG_MATH_RSQRT_MODE   - Override rsqrt mode: RG_MATH_RSQRT_MODE_RSQRT (default, rsqrt + one Newton-Raphson step), RG_MATH_RSQRT_MODE_SQRT_RCP, or RG_MATH_RSQRT_MODE_RSQRT_RAW (unrefined estimate)
 //   #define RG_MATH_CLIP_CONTROL - Override clip-space/handedness (default: RG_MATH_CLIP_CONTROL_RH_NO)
 //   #define RG_MATH_DEFINE_PRINTS     - Force-enable debug printing helpers in release builds
 //   #define RG_MATH_PRINT_PRECISION   - Print precision for rg_math_io.h (default: 5)

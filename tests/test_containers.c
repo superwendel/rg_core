@@ -259,7 +259,8 @@ static void test_sparse_set(void)
 	CHECK(rg_sparse_set_dense_capacity(&set) >= 16);
 	CHECK(rg_sparse_set_sparse_capacity(&set) >= 16);
 	for (size_t i = 0; i < 16; i++)
-		CHECK(set.sparse[i] == RG_SPARSE_INVALID);
+		CHECK(set.sparse[i] == (RgSparseIndex)RG_SPARSE_INVALID);
+	CHECK(sizeof(set.sparse[0]) == sizeof(RG_SPARSE_INDEX_TYPE));
 
 	rg_sparse_set_insert(uint32_t, &set, 10u);
 	rg_sparse_set_insert(uint32_t, &set, 20u);

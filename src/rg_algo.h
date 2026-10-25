@@ -17,7 +17,9 @@
 //   #define RG_ALGO_INVALID              - Invalid index sentinel (default: SIZE_MAX)
 //   #define RG_ALGO_INSERTION_CUTOFF     - Insertion sort cutoff (default: 24)
 //   #define RG_ALGO_STABLE_RUN            - Stable sort insertion-run size (default: 8)
-//   #define RG_ALGO_STACK_CAP            - Introsort stack capacity (default: 64)
+//   #define RG_ALGO_STACK_CAP            - Quicksort range stack capacity (default: 64)
+//   #define RG_ALGO_BLOCK                - Block partition size (default: 64)
+//   #define RG_ALGO_NINTHER_CUTOFF       - Ninther pivot cutoff (default: 128)
 //   #define RG_ALGO_RADIX_BITS           - Bits per radix pass (default: 8)
 //
 // NOTES:
@@ -56,8 +58,8 @@
 #define RG_ALGO_INSERTION_CUTOFF 24
 #endif
 
-#if RG_ALGO_INSERTION_CUTOFF < 1
-#error RG_ALGO_INSERTION_CUTOFF must be at least 1
+#if RG_ALGO_INSERTION_CUTOFF < 2
+#error RG_ALGO_INSERTION_CUTOFF must be at least 2
 #endif
 
 #ifndef RG_ALGO_STABLE_RUN
@@ -75,6 +77,32 @@
 #if RG_ALGO_STACK_CAP < 1
 #error RG_ALGO_STACK_CAP must be at least 1
 #endif
+
+#ifndef RG_ALGO_BLOCK
+#define RG_ALGO_BLOCK 64
+#endif
+
+#if RG_ALGO_BLOCK < 1 || RG_ALGO_BLOCK > 255
+#error RG_ALGO_BLOCK must be between 1 and 255
+#endif
+
+#ifndef RG_ALGO_NINTHER_CUTOFF
+#define RG_ALGO_NINTHER_CUTOFF 128
+#endif
+
+#if RG_ALGO_NINTHER_CUTOFF < 8
+#error RG_ALGO_NINTHER_CUTOFF must be at least 8
+#endif
+
+// Internal partition tuning. Ranges below RG_ALGO_BLOCK_CUTOFF elements use a
+// branching Hoare partition. Larger ranges start branching when the initial
+// scans cover at least RG_ALGO_SPARSE_SCAN elements (mostly ordered input) and
+// stay branching while they average at most one swap per RG_ALGO_SPARSE_SCAN
+// scanned elements; otherwise they switch to the block partition.
+// An already partitioned range tries insertion sort first and gives up once
+// it has moved more elements than the range holds.
+#define RG_ALGO_BLOCK_CUTOFF 128u
+#define RG_ALGO_SPARSE_SCAN 16u
 
 #ifndef RG_ALGO_RADIX_BITS
 #define RG_ALGO_RADIX_BITS 8
@@ -185,63 +213,325 @@
 			rg_algo_sift_down_##name(data, 0u, end - 1u); \
 		} \
 	} \
-	RGINLINE void rg_algo_median3_##name(type* data, size_t a, size_t b, size_t c) \
+	RGINLINE void rg_algo_unguarded_insertion_sort_##name(type* begin, type* end) \
 	{ \
-		if (rg_algo_less_##name(&data[b], &data[a])) \
+		if (begin == end) \
 		{ \
-			rg_algo_swap_##name(&data[a], &data[b]); \
+			return; \
 		} \
-		if (rg_algo_less_##name(&data[c], &data[a])) \
+		for (type* cur = begin + 1; cur < end; cur++) \
 		{ \
-			rg_algo_swap_##name(&data[a], &data[c]); \
-		} \
-		if (rg_algo_less_##name(&data[c], &data[b])) \
-		{ \
-			rg_algo_swap_##name(&data[b], &data[c]); \
+			type* sift = cur; \
+			type* prev = cur - 1; \
+			if (rg_algo_less_##name(sift, prev)) \
+			{ \
+				type key = *sift; \
+				do \
+				{ \
+					*sift-- = *prev--; \
+				} while (rg_algo_less_##name(&key, prev)); \
+				*sift = key; \
+			} \
 		} \
 	} \
-	RGINLINE size_t rg_algo_partition_##name(type* data, size_t lo, size_t hi) \
+	RGINLINE int rg_algo_partial_insertion_sort_##name(type* begin, type* end) \
 	{ \
-		size_t mid = lo + ((hi - lo) >> 1u); \
-		size_t last = hi - 1u; \
-		rg_algo_median3_##name(data, lo, mid, last); \
-		type pivot = data[mid]; \
-		size_t i = lo; \
-		size_t j = last; \
-		for (;;) \
+		size_t limit = (size_t)(end - begin); \
+		size_t moves = 0u; \
+		if (begin == end) \
 		{ \
-			while (rg_algo_less_##name(&data[i], &pivot)) \
+			return 1; \
+		} \
+		for (type* cur = begin + 1; cur < end; cur++) \
+		{ \
+			type* sift = cur; \
+			type* prev = cur - 1; \
+			if (rg_algo_less_##name(sift, prev)) \
 			{ \
-				i++; \
-			} \
-			while (rg_algo_less_##name(&pivot, &data[j])) \
-			{ \
-				j--; \
-			} \
-			if (i >= j) \
-			{ \
-				return j; \
-			} \
-			rg_algo_swap_##name(&data[i], &data[j]); \
-			i++; \
-			if (j > 0u) \
-			{ \
-				j--; \
+				type key = *sift; \
+				do \
+				{ \
+					*sift-- = *prev; \
+				} while (sift != begin && rg_algo_less_##name(&key, --prev)); \
+				*sift = key; \
+				moves += (size_t)(cur - sift); \
+				if (moves > limit) \
+				{ \
+					return 0; \
+				} \
 			} \
 		} \
+		return 1; \
+	} \
+	RGINLINE void rg_algo_sort3_##name(type* a, type* b, type* c) \
+	{ \
+		if (rg_algo_less_##name(b, a)) \
+		{ \
+			rg_algo_swap_##name(a, b); \
+		} \
+		if (rg_algo_less_##name(c, b)) \
+		{ \
+			rg_algo_swap_##name(b, c); \
+		} \
+		if (rg_algo_less_##name(b, a)) \
+		{ \
+			rg_algo_swap_##name(a, b); \
+		} \
+	} \
+	RGINLINE void rg_algo_choose_pivot_##name(type* begin, type* end) \
+	{ \
+		size_t size = (size_t)(end - begin); \
+		size_t half = size >> 1u; \
+		if (size > RG_ALGO_NINTHER_CUTOFF) \
+		{ \
+			rg_algo_sort3_##name(begin, begin + half, end - 1); \
+			rg_algo_sort3_##name(begin + 1, begin + (half - 1u), end - 2); \
+			rg_algo_sort3_##name(begin + 2, begin + (half + 1u), end - 3); \
+			rg_algo_sort3_##name(begin + (half - 1u), begin + half, begin + (half + 1u)); \
+			rg_algo_swap_##name(begin, begin + half); \
+		} \
+		else \
+		{ \
+			rg_algo_sort3_##name(begin + half, begin, end - 1); \
+		} \
+	} \
+	RGINLINE void rg_algo_break_patterns_##name(type* begin, type* pivot_pos, type* end) \
+	{ \
+		size_t left_size = (size_t)(pivot_pos - begin); \
+		size_t right_size = (size_t)(end - (pivot_pos + 1)); \
+		if (left_size >= 4u && left_size >= RG_ALGO_INSERTION_CUTOFF) \
+		{ \
+			size_t step = left_size / 4u; \
+			rg_algo_swap_##name(begin, begin + step); \
+			rg_algo_swap_##name(pivot_pos - 1, pivot_pos - step); \
+			if (left_size > RG_ALGO_NINTHER_CUTOFF) \
+			{ \
+				rg_algo_swap_##name(begin + 1, begin + (step + 1u)); \
+				rg_algo_swap_##name(begin + 2, begin + (step + 2u)); \
+				rg_algo_swap_##name(pivot_pos - 2, pivot_pos - (step + 1u)); \
+				rg_algo_swap_##name(pivot_pos - 3, pivot_pos - (step + 2u)); \
+			} \
+		} \
+		if (right_size >= 4u && right_size >= RG_ALGO_INSERTION_CUTOFF) \
+		{ \
+			size_t step = right_size / 4u; \
+			rg_algo_swap_##name(pivot_pos + 1, pivot_pos + (step + 1u)); \
+			rg_algo_swap_##name(end - 1, end - step); \
+			if (right_size > RG_ALGO_NINTHER_CUTOFF) \
+			{ \
+				rg_algo_swap_##name(pivot_pos + 2, pivot_pos + (step + 2u)); \
+				rg_algo_swap_##name(pivot_pos + 3, pivot_pos + (step + 3u)); \
+				rg_algo_swap_##name(end - 2, end - (step + 1u)); \
+				rg_algo_swap_##name(end - 3, end - (step + 2u)); \
+			} \
+		} \
+	} \
+	RGINLINE void rg_algo_swap_offsets_##name(type* left_base, type* right_base, const unsigned char* offsets_l, const unsigned char* offsets_r, size_t num, int use_swaps) \
+	{ \
+		if (use_swaps) \
+		{ \
+			for (size_t i = 0; i < num; i++) \
+			{ \
+				rg_algo_swap_##name(left_base + offsets_l[i], right_base - offsets_r[i]); \
+			} \
+		} \
+		else if (num > 0u) \
+		{ \
+			type* l = left_base + offsets_l[0]; \
+			type* r = right_base - offsets_r[0]; \
+			type tmp = *l; \
+			*l = *r; \
+			for (size_t i = 1; i < num; i++) \
+			{ \
+				l = left_base + offsets_l[i]; \
+				*r = *l; \
+				r = right_base - offsets_r[i]; \
+				*l = *r; \
+			} \
+			*r = tmp; \
+		} \
+	} \
+	RGINLINE type* rg_algo_partition_right_##name(type* begin, type* end, int* already_partitioned) \
+	{ \
+		type pivot = *begin; \
+		type* first = begin; \
+		type* last = end; \
+		type* pivot_pos; \
+		while (rg_algo_less_##name(++first, &pivot)) \
+		{ \
+		} \
+		if (first - 1 == begin) \
+		{ \
+			while (first < last && !rg_algo_less_##name(--last, &pivot)) \
+			{ \
+			} \
+		} \
+		else \
+		{ \
+			while (!rg_algo_less_##name(--last, &pivot)) \
+			{ \
+			} \
+		} \
+		*already_partitioned = first >= last; \
+		if (first < last && (size_t)(end - begin) < RG_ALGO_BLOCK_CUTOFF) \
+		{ \
+			do \
+			{ \
+				rg_algo_swap_##name(first, last); \
+				while (rg_algo_less_##name(++first, &pivot)) \
+				{ \
+				} \
+				while (!rg_algo_less_##name(--last, &pivot)) \
+				{ \
+				} \
+			} while (first < last); \
+		} \
+		else if (first < last && (size_t)(first - begin) + (size_t)(end - last) >= RG_ALGO_SPARSE_SCAN) \
+		{ \
+			size_t swaps = 0u; \
+			do \
+			{ \
+				rg_algo_swap_##name(first, last); \
+				while (rg_algo_less_##name(++first, &pivot)) \
+				{ \
+				} \
+				while (!rg_algo_less_##name(--last, &pivot)) \
+				{ \
+				} \
+				swaps++; \
+			} while (first < last && swaps * RG_ALGO_SPARSE_SCAN <= (size_t)(first - begin) + (size_t)(end - last)); \
+		} \
+		if (first < last) \
+		{ \
+			unsigned char offsets_l[RG_ALGO_BLOCK]; \
+			unsigned char offsets_r[RG_ALGO_BLOCK]; \
+			type* offsets_l_base; \
+			type* offsets_r_base; \
+			size_t num_l = 0u; \
+			size_t num_r = 0u; \
+			size_t start_l = 0u; \
+			size_t start_r = 0u; \
+			rg_algo_swap_##name(first, last); \
+			++first; \
+			offsets_l_base = first; \
+			offsets_r_base = last; \
+			while (first < last) \
+			{ \
+				size_t num_unknown = (size_t)(last - first); \
+				size_t left_split = num_l == 0u ? (num_r == 0u ? num_unknown / 2u : num_unknown) : 0u; \
+				size_t right_split = num_r == 0u ? (num_unknown - left_split) : 0u; \
+				size_t num; \
+				if (left_split >= RG_ALGO_BLOCK) \
+				{ \
+					left_split = RG_ALGO_BLOCK; \
+				} \
+				for (size_t i = 0; i < left_split;) \
+				{ \
+					offsets_l[num_l] = (unsigned char)i++; \
+					num_l += (size_t)(rg_algo_less_##name(first, &pivot) == 0); \
+					++first; \
+				} \
+				if (right_split >= RG_ALGO_BLOCK) \
+				{ \
+					right_split = RG_ALGO_BLOCK; \
+				} \
+				for (size_t i = 0; i < right_split;) \
+				{ \
+					offsets_r[num_r] = (unsigned char)++i; \
+					num_r += (size_t)(rg_algo_less_##name(--last, &pivot) != 0); \
+				} \
+				num = num_l < num_r ? num_l : num_r; \
+				rg_algo_swap_offsets_##name(offsets_l_base, offsets_r_base, offsets_l + start_l, offsets_r + start_r, num, num_l == num_r); \
+				num_l -= num; \
+				num_r -= num; \
+				start_l += num; \
+				start_r += num; \
+				if (num_l == 0u) \
+				{ \
+					start_l = 0u; \
+					offsets_l_base = first; \
+				} \
+				if (num_r == 0u) \
+				{ \
+					start_r = 0u; \
+					offsets_r_base = last; \
+				} \
+			} \
+			if (num_l > 0u) \
+			{ \
+				const unsigned char* offsets = offsets_l + start_l; \
+				while (num_l-- > 0u) \
+				{ \
+					rg_algo_swap_##name(offsets_l_base + offsets[num_l], --last); \
+				} \
+				first = last; \
+			} \
+			if (num_r > 0u) \
+			{ \
+				const unsigned char* offsets = offsets_r + start_r; \
+				while (num_r-- > 0u) \
+				{ \
+					rg_algo_swap_##name(first, offsets_r_base - offsets[num_r]); \
+					++first; \
+				} \
+				last = first; \
+			} \
+		} \
+		pivot_pos = first - 1; \
+		*begin = *pivot_pos; \
+		*pivot_pos = pivot; \
+		return pivot_pos; \
+	} \
+	RGINLINE type* rg_algo_partition_left_##name(type* begin, type* end) \
+	{ \
+		type pivot = *begin; \
+		type* first = begin; \
+		type* last = end; \
+		type* pivot_pos; \
+		while (rg_algo_less_##name(&pivot, --last)) \
+		{ \
+		} \
+		if (last + 1 == end) \
+		{ \
+			while (first < last && !rg_algo_less_##name(&pivot, ++first)) \
+			{ \
+			} \
+		} \
+		else \
+		{ \
+			while (!rg_algo_less_##name(&pivot, ++first)) \
+			{ \
+			} \
+		} \
+		while (first < last) \
+		{ \
+			rg_algo_swap_##name(first, last); \
+			while (rg_algo_less_##name(&pivot, --last)) \
+			{ \
+			} \
+			while (!rg_algo_less_##name(&pivot, ++first)) \
+			{ \
+			} \
+		} \
+		pivot_pos = last; \
+		*begin = *pivot_pos; \
+		*pivot_pos = pivot; \
+		return pivot_pos; \
 	} \
 	typedef struct rg_algo_range_##name \
 	{ \
-		size_t lo; \
-		size_t hi; \
-		size_t depth; \
+		type* begin; \
+		type* end; \
+		size_t bad_allowed; \
+		int leftmost; \
 	} rg_algo_range_##name; \
-	RGINLINE void rg_algo_push_##name(rg_algo_range_##name* stack, size_t* top, size_t lo, size_t hi, size_t depth) \
+	RGINLINE void rg_algo_push_##name(rg_algo_range_##name* stack, size_t* top, type* begin, type* end, size_t bad_allowed, int leftmost) \
 	{ \
 		rg_algo_range_##name range; \
-		range.lo = lo; \
-		range.hi = hi; \
-		range.depth = depth; \
+		range.begin = begin; \
+		range.end = end; \
+		range.bad_allowed = bad_allowed; \
+		range.leftmost = leftmost; \
 		stack[(*top)++] = range; \
 	} \
 	RGINLINE void rg_algo_sort_##name(type* data, size_t count) \
@@ -296,55 +586,90 @@
 			} \
 		} \
 		rg_algo_range_##name stack[RG_ALGO_STACK_CAP]; \
-		size_t depth_limit = rg_algo_log2_##name(count) * 2u; \
-		size_t top = 0; \
-		rg_algo_push_##name(stack, &top, 0u, count, depth_limit); \
+		size_t top = 0u; \
+		rg_algo_push_##name(stack, &top, data, data + count, rg_algo_log2_##name(count), 1); \
 		while (top > 0u) \
 		{ \
 			rg_algo_range_##name range = stack[--top]; \
-			size_t lo = range.lo; \
-			size_t hi = range.hi; \
-			size_t depth = range.depth; \
-			while (hi - lo > RG_ALGO_INSERTION_CUTOFF) \
+			type* begin = range.begin; \
+			type* end = range.end; \
+			size_t bad_allowed = range.bad_allowed; \
+			int leftmost = range.leftmost; \
+			for (;;) \
 			{ \
-				if (depth == 0u) \
+				size_t size = (size_t)(end - begin); \
+				size_t left_size; \
+				size_t right_size; \
+				type* pivot_pos; \
+				int already_partitioned; \
+				if (size <= RG_ALGO_INSERTION_CUTOFF) \
 				{ \
-					rg_algo_heap_sort_##name(data + lo, hi - lo); \
-					goto rg_algo_next_range_##name; \
+					if (leftmost) \
+					{ \
+						rg_algo_insertion_sort_##name(begin, size); \
+					} \
+					else \
+					{ \
+						rg_algo_unguarded_insertion_sort_##name(begin, end); \
+					} \
+					break; \
 				} \
-				size_t pivot = rg_algo_partition_##name(data, lo, hi); \
-				depth--; \
-				size_t left_len = pivot + 1u - lo; \
-				size_t right_len = hi - (pivot + 1u); \
-				if (left_len < right_len) \
+				rg_algo_choose_pivot_##name(begin, end); \
+				if (!leftmost && !rg_algo_less_##name(begin - 1, begin)) \
 				{ \
-					if (right_len > 1u) \
+					begin = rg_algo_partition_left_##name(begin, end) + 1; \
+					continue; \
+				} \
+				pivot_pos = rg_algo_partition_right_##name(begin, end, &already_partitioned); \
+				left_size = (size_t)(pivot_pos - begin); \
+				right_size = (size_t)(end - (pivot_pos + 1)); \
+				if (left_size < size / 8u || right_size < size / 8u) \
+				{ \
+					if (--bad_allowed == 0u) \
+					{ \
+						rg_algo_heap_sort_##name(begin, size); \
+						break; \
+					} \
+					rg_algo_break_patterns_##name(begin, pivot_pos, end); \
+				} \
+				else if (already_partitioned && \
+				         rg_algo_partial_insertion_sort_##name(begin, pivot_pos) && \
+				         rg_algo_partial_insertion_sort_##name(pivot_pos + 1, end)) \
+				{ \
+					break; \
+				} \
+				if (left_size < right_size) \
+				{ \
+					if (right_size > 1u) \
 					{ \
 						if (top >= RG_ALGO_STACK_CAP) \
 						{ \
-							rg_algo_heap_sort_##name(data + lo, hi - lo); \
-							goto rg_algo_next_range_##name; \
+							rg_algo_heap_sort_##name(pivot_pos + 1, right_size); \
 						} \
-						rg_algo_push_##name(stack, &top, pivot + 1u, hi, depth); \
+						else \
+						{ \
+							rg_algo_push_##name(stack, &top, pivot_pos + 1, end, bad_allowed, 0); \
+						} \
 					} \
-					hi = pivot + 1u; \
+					end = pivot_pos; \
 				} \
 				else \
 				{ \
-					if (left_len > 1u) \
+					if (left_size > 1u) \
 					{ \
 						if (top >= RG_ALGO_STACK_CAP) \
 						{ \
-							rg_algo_heap_sort_##name(data + lo, hi - lo); \
-							goto rg_algo_next_range_##name; \
+							rg_algo_heap_sort_##name(begin, left_size); \
 						} \
-						rg_algo_push_##name(stack, &top, lo, pivot + 1u, depth); \
+						else \
+						{ \
+							rg_algo_push_##name(stack, &top, begin, pivot_pos, bad_allowed, leftmost); \
+						} \
 					} \
-					lo = pivot + 1u; \
+					begin = pivot_pos + 1; \
+					leftmost = 0; \
 				} \
 			} \
-			rg_algo_insertion_sort_##name(data + lo, hi - lo); \
-			rg_algo_next_range_##name:; \
 		} \
 	} \
 	RGINLINE void rg_algo_merge_##name(const type* src, type* dst, size_t left, size_t mid, size_t right) \
@@ -454,21 +779,53 @@
 	{ \
 		RG_ALGO_ASSERT(data != NULL); \
 		RG_ALGO_ASSERT(nth < count); \
-		size_t lo = 0u; \
-		size_t hi = count; \
-		while (hi - lo > RG_ALGO_INSERTION_CUTOFF) \
+		type* begin = data; \
+		type* end = data + count; \
+		type* target = data + nth; \
+		int leftmost = 1; \
+		while ((size_t)(end - begin) > RG_ALGO_INSERTION_CUTOFF) \
 		{ \
-			size_t pivot = rg_algo_partition_##name(data, lo, hi); \
-			if (nth <= pivot) \
+			size_t size = (size_t)(end - begin); \
+			type* pivot_pos; \
+			int already_partitioned; \
+			rg_algo_choose_pivot_##name(begin, end); \
+			if (!leftmost && !rg_algo_less_##name(begin - 1, begin)) \
 			{ \
-				hi = pivot + 1u; \
+				pivot_pos = rg_algo_partition_left_##name(begin, end); \
+				if (target <= pivot_pos) \
+				{ \
+					return; \
+				} \
+				begin = pivot_pos + 1; \
+				continue; \
+			} \
+			pivot_pos = rg_algo_partition_right_##name(begin, end, &already_partitioned); \
+			if (target == pivot_pos) \
+			{ \
+				return; \
+			} \
+			if ((size_t)(pivot_pos - begin) < size / 8u || (size_t)(end - (pivot_pos + 1)) < size / 8u) \
+			{ \
+				rg_algo_break_patterns_##name(begin, pivot_pos, end); \
+			} \
+			if (target < pivot_pos) \
+			{ \
+				end = pivot_pos; \
 			} \
 			else \
 			{ \
-				lo = pivot + 1u; \
+				begin = pivot_pos + 1; \
+				leftmost = 0; \
 			} \
 		} \
-		rg_algo_insertion_sort_##name(data + lo, hi - lo); \
+		if (leftmost) \
+		{ \
+			rg_algo_insertion_sort_##name(begin, (size_t)(end - begin)); \
+		} \
+		else \
+		{ \
+			rg_algo_unguarded_insertion_sort_##name(begin, end); \
+		} \
 	} \
 	RGINLINE int rg_algo_is_sorted_##name(const type* data, size_t count) \
 	{ \

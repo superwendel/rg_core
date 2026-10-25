@@ -31,6 +31,7 @@ Usage: ./build.sh [target] [benchmark arguments...]
   test (default), test_<module>, test_ubsan
   bench                 algo, hash, and containers
   bench_<suite>         algo, hash, containers, math, sprintf, storage, input, prof
+                        (math also builds and runs bench_math_avx2 on AVX2 hosts)
   bench_regression      math, sprintf, storage, input, and prof
   clean                 remove only native Linux build artifacts
 Environment: CC, CXX, CPPFLAGS, CFLAGS, CXXFLAGS, LDFLAGS,
@@ -163,18 +164,27 @@ test_module() {
             test_case test_mem test_mem.c
             test_case test_mem_eager test_mem.c -DRG_MALLOC_LAZY_COMMIT=0
             test_case test_mem_secure test_mem.c -DRG_MALLOC_SECURE
+            test_case test_mem_prefault test_mem.c -DRG_MALLOC_PREFAULT=1
+            test_case test_mem_huge_pages test_mem.c -DRG_MALLOC_HUGE_PAGES=1
+            test_case test_mem_prefault_huge_pages test_mem.c -DRG_MALLOC_PREFAULT=1 -DRG_MALLOC_HUGE_PAGES=1
             ;;
         containers)
             test_case test_containers test_containers.c
             test_case test_containers_config test_containers.c -DRG_CONTAINERS_MIN_CAP=3 -DRG_SPARSE_INVALID=17
+            test_case test_containers_u32_index test_containers.c -DRG_SPARSE_INDEX_TYPE=uint32_t
+            test_case test_containers_u32_index_config test_containers.c -DRG_SPARSE_INDEX_TYPE=uint32_t -DRG_CONTAINERS_MIN_CAP=3 -DRG_SPARSE_INVALID=17
             ;;
         time)
             test_case test_time test_time.c
             test_case test_time_custom test_time_custom.c
+            test_case test_time_os_clock test_time.c -DRG_TIME_USE_TSC=0
+            test_case test_time_tsc_calibrated test_time.c -DRG_TIME_TSC_FORCE_CALIBRATION
             ;;
         prof)
             test_case test_prof test_prof.c
             test_case test_prof_disabled test_prof_disabled.c
+            test_case test_prof_os_clock test_prof.c -DRG_TIME_USE_TSC=0
+            test_case test_prof_plain_count test_prof.c -DRG_PROF_ATOMICS=0
             ;;
         bin)
             test_case test_bin test_bin.c
@@ -225,6 +235,7 @@ test_module() {
             require_sdl
             test_case test_input test_input.c "${sdl_cflags[@]}" "${sdl_libs[@]}"
             test_case test_input_frame test_input_frame.c "${sdl_cflags[@]}" "${sdl_libs[@]}"
+            test_case test_input_frame_scalar test_input_frame.c -DRG_INPUT_NO_SIMD "${sdl_cflags[@]}" "${sdl_libs[@]}"
             ;;
         *) echo "Unknown test module: $module" >&2; exit 1 ;;
     esac
@@ -259,6 +270,9 @@ test_ubsan() {
     test_case test_sprintf_secure test_sprintf.c -DRG_SPRINTF_SECURE
     test_case test_string_secure test_string.c -DRG_STRING_SECURE
     test_case test_mem_secure test_mem.c -DRG_MALLOC_SECURE
+    test_case test_time_os_clock test_time.c -DRG_TIME_USE_TSC=0
+    test_case test_mem_prefault test_mem.c -DRG_MALLOC_PREFAULT=1
+    test_case test_containers_u32_index test_containers.c -DRG_SPARSE_INDEX_TYPE=uint32_t
     echo 'All Linux UBSan tests passed.'
 }
 
@@ -335,6 +349,16 @@ bench_suite() {
             "$repo/benchmarks/bench_$suite.$extension" "${objects[@]}" "${user_ldflags[@]}" "${links[@]}" -lm -o "$bench_output/bench_$suite"
     fi
     if [[ -z ${RG_BENCH_BUILD_ONLY:-} ]]; then "$bench_output/bench_$suite" "${run_args[@]}"; fi
+    if [[ $suite == math ]] && ((have_avx2)); then
+        # The SSE4.1/AVX2/FMA code paths are only reachable with target flags,
+        # so build the math suite a second time at the host's SIMD level.
+        local simd_flags=(-mavx2)
+        if ((have_fma)); then simd_flags+=(-mfma); fi
+        echo "Building bench_math_avx2 (${simd_flags[*]})..."
+        "${cxx[@]}" -std=c++17 "${bench_flags[@]}" "${user_cxxflags[@]}" "${extra[@]}" "${simd_flags[@]}" \
+            "$repo/benchmarks/bench_math.cpp" "${objects[@]}" "${user_ldflags[@]}" "${links[@]}" -lm -o "$bench_output/bench_math_avx2"
+        if [[ -z ${RG_BENCH_BUILD_ONLY:-} ]]; then "$bench_output/bench_math_avx2" "${run_args[@]}"; fi
+    fi
 }
 
 case $target in
