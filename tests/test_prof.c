@@ -189,7 +189,9 @@ static void test_overflow(void)
 
 static void test_allocation_rollback(void)
 {
-	u8 storage[128];
+	// Cache-line aligned so the slot allocation needs no alignment padding;
+	// GCC's -Warray-bounds otherwise reports the padded range under UBSan.
+	_Alignas(RG_CACHE_LINE_SIZE) u8 storage[128];
 	RgArena arena = {(char*)storage, sizeof(storage), 0u, sizeof(storage)};
 	RgProf prof;
 	TEST_ASSERT(rg_prof_init(&prof, &arena, 1, 8), "prof init");
