@@ -48,7 +48,7 @@ Define configuration macros before inclusion when needed:
 #define RG_SPRINTF_NO_SIMD  // Disable SIMD hexadecimal encoding (SSSE3 or NEON)
 #define RG_SPRINTF_NO_ASM   // Force the hybrid header to select portable C
 #define RG_SPRINTF_SECURE   // Enable argument checks and parser limits
-#define RG_SPRINTF_ROUND_TIES_AWAY 1 // Round exact float ties away from zero (MSVC CRT style)
+#define RG_SPRINTF_ROUND_TIES_AWAY 1 // Round exact float ties away from zero (legacy MSVC CRT style)
 #define RG_SPRINTF_ASSERT(x) custom_assert(x)
 ```
 
@@ -118,16 +118,18 @@ back to a small bignum, so there is no precision cliff and no notation switch:
 `%f` of `1e22` prints all 23 integer digits like libc does.
 
 Rounding is round-half-to-even on the exact value, the IEEE 754 default that
-glibc, musl, macOS, and the BSDs use, so `%.2f` of `0.125` is `0.12`,
+glibc, musl, macOS, the BSDs, and the Universal CRT (Visual Studio 2015 and
+later) use, so `%.2f` of `0.125` is `0.12`,
 `%.0f` of `2.5` is `2`, and `%.0f` of `0.49999997` is `0`. The output matches
 those libcs bit for bit for `%f`, `%e`, `%g` and their uppercase forms at
 every precision up to 350, including the `+`, space, `#`, `0`, and `-` flags
 and widths, with one exception: for `%#g` glibc drops the trailing zeros when
 rounding carries into a new exponent (`%#.3G` of `999.866` prints `1.E+03`),
 where rg_sprintf keeps them as C11 specifies (`1.00E+03`), as musl does.
-Microsoft's CRT rounds exact ties away from zero (`%.0f` of `2.5` is `3`);
-define `RG_SPRINTF_ROUND_TIES_AWAY` as `1` before the include to match it.
-Either way the output is identical on every platform and compiler.
+The legacy Microsoft CRT, before Visual Studio 2015 or when a program links
+`legacy_stdio_float_rounding.obj`, rounds exact ties away from zero (`%.0f` of
+`2.5` is `3`); define `RG_SPRINTF_ROUND_TIES_AWAY` as `1` before the include to
+match it. Either way the output is identical on every platform and compiler.
 
 `%g` chooses between the `%e` and `%f` styles from the exponent after rounding
 to the requested significant digits, so `%.1g` of `9.5` is `1e+01`. Infinity

@@ -9,8 +9,9 @@
 //
 // OPTIONS:
 //   #define RG_SPRINTF_NO_SIMD     - Disable SIMD optimizations
-//   #define RG_SPRINTF_ROUND_TIES_AWAY 1 - Round exact float ties away from zero like the
-//                                    Microsoft CRT (default: half to even, like glibc/musl/macOS)
+//   #define RG_SPRINTF_ROUND_TIES_AWAY 1 - Round exact float ties away from zero like the legacy
+//                                    Microsoft CRT (default: half to even, like glibc, musl,
+//                                    macOS and the Universal CRT)
 //   #define RG_SPRINTF_SECURE      - Enable security checks (null checks, width/precision limits)
 //   #define RG_SPRINTF_ASSERT(x)   - Custom assert macro
 //
@@ -694,8 +695,9 @@ typedef union
 // arithmetic; a small bignum handles exponents beyond that range.
 //
 // Rounding: round half to even on the exact binary value, which is what IEEE
-// 754 and the libcs above do. RG_SPRINTF_ROUND_TIES_AWAY=1 rounds exact ties
-// away from zero instead, matching Microsoft's CRT.
+// 754, the libcs above and the Universal CRT (Visual Studio 2015 and later) do.
+// RG_SPRINTF_ROUND_TIES_AWAY=1 rounds exact ties away from zero instead, matching
+// the legacy Microsoft CRT (or programs linking legacy_stdio_float_rounding.obj).
 
 #ifndef RG_SPRINTF_ROUND_TIES_AWAY
 #define RG_SPRINTF_ROUND_TIES_AWAY 0

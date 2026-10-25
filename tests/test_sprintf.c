@@ -819,6 +819,12 @@ static void test_float_exactness(void)
 	CHECK(rg_snprintf(buf, sizeof(buf), "%E", INFINITY) == 3 && strcmp(buf, "INF") == 0);
 	CHECK(rg_snprintf(buf, sizeof(buf), "%08.2f", -INFINITY) == 8 && strcmp(buf, "    -inf") == 0);
 	CHECK(rg_snprintf(buf, sizeof(buf), "%G", NAN) == 3 && strcmp(buf, "NAN") == 0);
+	// The unbounded %.2f shortcut must not apply to %.2F, whose specials are capitals.
+	CHECK(rg_sprintf(buf, "%.2F", INFINITY) == 3 && strcmp(buf, "INF") == 0);
+	CHECK(rg_sprintf(buf, "%.2F", -INFINITY) == 4 && strcmp(buf, "-INF") == 0);
+	CHECK(rg_sprintf(buf, "%.2F", NAN) == 3 && strcmp(buf, "NAN") == 0);
+	CHECK(rg_sprintf(buf, "%.2F", 2.5) == 4 && strcmp(buf, "2.50") == 0);
+	CHECK(rg_sprintf(buf, "%.2f", INFINITY) == 3 && strcmp(buf, "inf") == 0);
 
 	// Negative precision selects six places; precision clamps at the maximum.
 	end = rg_dtoa(1.5, buf, -1);
