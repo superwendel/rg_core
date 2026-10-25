@@ -146,8 +146,12 @@ stability is required.
 
 On the published one-million-element random `int32` workload, the typed radix
 sort completed in 15.38 ms versus 89.63 ms for `std::sort` and 142.05 ms for
-`qsort`. See the [core benchmark report](benchmarks/rg_core.md#rg_algo) for
-record sorting, selection, methodology, comparison versions, and limitations.
+`qsort` (MSVC, Ryzen 9 4900HS). On a low-end Linux laptop (Intel Core i3-1005G1,
+GCC 13.3) the same workload takes 9.2 ms for the radix sort, 37.9 ms for the
+block-partition comparison sort, and 72.3 ms for libstdc++'s `std::sort`;
+`rg_algo_nth_element` takes 2.7 ms against 5.3 ms for `std::nth_element`. See
+the [core benchmark report](benchmarks/rg_core.md#rg_algo) for record sorting,
+selection, methodology, comparison versions, and limitations.
 
 ## Configuration
 

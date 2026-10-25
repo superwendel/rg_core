@@ -200,18 +200,25 @@ the implementation order rotates between samples.
 
 | Entries | Operation | rg (`rg_hash_u32_fast`) | rg (`rg_hash_u32`) | `std::unordered_map` |
 | ---: | --- | ---: | ---: | ---: |
-| 4,096 | insert | 9.4 | 11.0 | 53.3 |
-| 4,096 | find, insertion order | 4.5 | 6.7 | 8.0 |
-| 4,096 | find, shuffled order | 4.2 | 6.3 | 8.8 |
-| 4,096 | find, missing keys | 4.2 | 12.9 | 6.3 |
-| 4,096 | remove | 9.5 | 13.4 | 42.4 |
-| 65,536 | find, insertion order | 16.3 | 28.6 | 16.7 |
-| 65,536 | find, shuffled order | 19.2 | 26.8 | 39.5 |
-| 500,000 | insert | 51.5 | 64.0 | 142.0 |
-| 500,000 | find, insertion order | 35.3 | 46.1 | 32.9 |
-| 500,000 | find, shuffled order | 34.1 | 41.1 | 75.2 |
-| 500,000 | find, missing keys | 25.4 | 50.1 | 48.0 |
-| 500,000 | remove | 48.0 | 57.7 | 312.0 |
+| 4,096 | insert | 4.6 | 5.7 | 26.3 |
+| 4,096 | find, insertion order | 2.3 | 3.6 | 4.0 |
+| 4,096 | find, shuffled order | 2.3 | 3.6 | 4.1 |
+| 4,096 | find, missing keys | 1.5 | 5.6 | 4.2 |
+| 4,096 | remove | 4.0 | 6.1 | 21.3 |
+| 65,536 | insert | 5.9 | 13.8 | 23.8 |
+| 65,536 | find, insertion order | 3.9 | 11.1 | 4.5 |
+| 65,536 | find, shuffled order | 4.0 | 11.3 | 7.2 |
+| 65,536 | find, missing keys | 10.9 | 16.7 | 11.9 |
+| 65,536 | remove | 8.0 | 15.3 | 33.0 |
+| 500,000 | insert | 25.8 | 29.7 | 49.1 |
+| 500,000 | find, insertion order | 17.9 | 22.6 | 12.4 |
+| 500,000 | find, shuffled order | 17.6 | 22.5 | 31.8 |
+| 500,000 | find, missing keys | 13.3 | 25.8 | 24.2 |
+| 500,000 | remove | 26.5 | 31.7 | 144.1 |
+
+String keys (`rg_hash_str`, 32-byte keys, `bench_storage`): 23.0 ns per
+reserved insert and 23.0 ns per hit at 4,096 entries, 63 ns and 58 ns at
+262,144 entries; `put` hashes each key once.
 
 Against the avalanche hash, the fast hash was faster in all 30 size/operation
 cells under both GCC and Clang: by 14 to 67 percent under GCC and 10 to 54

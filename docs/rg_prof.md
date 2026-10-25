@@ -173,6 +173,23 @@ On x86-64 the timer is `rdtsc` whenever `rg_time` selects its TSC backend (see
 [rg_time](rg_time.md)); a profiler scope is two timer reads and little else, so
 this roughly halves scope overhead relative to the OS clock.
 
+On Linux x86-64 (Intel Core i3-1005G1, Ubuntu 24.04, GCC 13.3, `./build.sh
+bench_prof`, TSC backend selected, median of seven samples and three process
+runs on one pinned core):
+
+| Operation | Median time |
+| --- | ---: |
+| Timer call | 8.0 ns |
+| Instant event through TLS | 8.1 ns |
+| Timed scope through TLS | 16.1 ns |
+| Fixed-section baseline | 16.0 ns |
+| `rg_prof` empty frame | 16.1 ns |
+| Fixed four-section frame baseline | 23.5 ns |
+| Post-frame history capture | 18.7 ns |
+
+With `RG_TIME_USE_TSC=0` (the `clock_gettime` backend) the timer call costs
+about 18 ns and a timed scope about 36 ns on the same machine.
+
 Seven fresh-process runs of the optimized MSVC x64 benchmark produced
 these historical representative medians:
 

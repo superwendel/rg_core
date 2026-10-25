@@ -29,10 +29,41 @@ Each row sorts 1,048,576 values.
 | 32-byte records, 64-bit keys | **81.84 ms** | 115.80 ms | 94.21 ms | 273.88 ms | n/a | n/a |
 
 These are the figures from before the October 2026 block-partition rewrite of the
-comparison sort; the current Linux before/after numbers are in the
-[benchmark README](README.md#linux-beforeafter-october-2026), where the
-comparison sort finishes random `int32` input in about half the time of
-`std::sort` and the 64-bit-key record case now beats the radix path.
+comparison sort. The before/after numbers for that change are in the
+[benchmark README](README.md#linux-beforeafter-october-2026).
+
+### Linux x86-64
+
+Measured with `./build.sh bench_algo` on an Intel Core i3-1005G1 laptop (Ubuntu
+24.04, GCC 13.3 and libstdc++, `-O2 -DNDEBUG`), one warmup and the median of
+seven samples, three process runs on one pinned core. Each row sorts 1,048,576
+values; the 4,096-element rows are in microseconds.
+
+| Workload | rg sort | rg radix | `std::sort` | `qsort` | rg stable | `std::stable_sort` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Random `int32` | 37.9 ms | **9.2 ms** | 72.3 ms | 135.7 ms | 87.2 ms | 88.4 ms |
+| `int32`, 256 distinct values | **11.2 ms** | 15.2 ms | 37.0 ms | 97.6 ms | 52.6 ms | 54.1 ms |
+| `int32`, nearly sorted | **8.1 ms** | 9.3 ms | 12.4 ms | 47.9 ms | 13.8 ms | 14.8 ms |
+| `int32`, sorted / reverse / all equal | **0.40 / 0.82 / 0.42 ms** | 9.2 / 9.3 / 2.2 ms | 10.3 / 7.2 / 7.9 ms | 29.6 / 35.0 / 29.7 ms | 0.41 / 13.3 / 0.41 ms | 9.6 / 14.2 / 9.7 ms |
+| 32-byte records, 16-bit keys | 41.2 ms | **15.3 ms** | 75.0 ms | 201.0 ms | 117.7 ms | 111.2 ms |
+| 32-byte records, 64-bit keys | **49.2 ms** | 61.6 ms | 81.1 ms | 210.1 ms | 121.9 ms | 114.7 ms |
+| Random `int32`, 4,096 | 85.0 µs | **31.0 µs** | 146.7 µs | 293.5 µs | 180.5 µs | 189.0 µs |
+
+| `rg_algo_nth_element` | rg | `std::nth_element` |
+| --- | ---: | ---: |
+| 1,048,576 random | **2.66 ms** | 5.28 ms |
+| 1,048,576, 256 distinct values | **2.88 ms** | 8.61 ms |
+| 65,536 random | **174 µs** | 471 µs |
+| 4,096 random | 6.4 µs | 6.3 µs |
+| 4,096, 256 distinct values | 9.7 µs | **5.6 µs** |
+
+The comparison sort takes about half the time of libstdc++'s `std::sort` on
+random and duplicate-heavy input and keeps its linear fast paths for sorted,
+reversed, and constant input. The 64-bit-key record case is the one where the
+comparison sort beats the eight-bit radix sort, which needs eight passes over
+32-byte records there. Selection is 2x to 3x faster than `std::nth_element`
+from 65,536 elements up; at 4,096 elements with heavy duplicates it is slower,
+because the equal-run partition costs more than it saves at that size.
 
 For random integers, the comparison-to-radix elapsed-time ratios were 5.8x for
 `std::sort` and 9.2x for `qsort`; the radix path used 17% and 11% of their

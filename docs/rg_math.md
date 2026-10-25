@@ -336,6 +336,45 @@ All use the same inputs and timing protocol; the default library normalization
 precision is retained. These comparisons therefore include each library's
 precision/safety tradeoffs.
 
+### Linux x86-64 results
+
+Measured with the checked-in harness on a low-end laptop: Intel Core i3-1005G1
+(Ice Lake, 2 cores), Ubuntu 24.04, GCC 13.3, `./build.sh bench_math` (`-O2
+-DNDEBUG`; the AVX2 column is the `bench_math_avx2` binary built with `-mavx2
+-mfma`). Default configuration (`RG_MATH_MAX_PERF=1`, refined `rsqrt`).
+Nanoseconds per operation, median of seven samples and three process runs on
+one pinned core; includes the harness's array loads and stores.
+
+| Operation | SSE2 | AVX2+FMA | | Operation | SSE2 | AVX2+FMA |
+| --- | ---: | ---: | --- | --- | ---: | ---: |
+| `vec3_add` | 0.64 | 0.66 | | `mat4_mul` | 4.75 | 3.23 |
+| `vec3_scale` | 0.59 | 0.59 | | `mat4_mulv4` | 1.60 | 2.37 |
+| `vec3_dot` | 0.85 | 1.04 | | `mat4_mul4` (4 products) | 16.0 | 9.1 |
+| `vec3_length` | 0.90 | 0.91 | | `mat4_inv_tr` | 2.43 | 2.39 |
+| `vec3_normalize` | 1.84 | 1.76 | | `mat4_inv_affine` | 7.00 | 8.37 |
+| `vec3_cross` | 0.91 | 0.96 | | `mat4_inv` | 9.19 | 7.79 |
+| `vec4_dot` | 0.85 | 0.98 | | `mat4_trs_make` | 3.48 | 3.01 |
+| `vec4_length` | 0.90 | 0.95 | | `mat4_from_quat` | 3.58 | 2.90 |
+| `vec4_normalize` | 1.73 | 1.47 | | `mat4_decompose` | 11.7 | 10.0 |
+| `vec4_floor` | 1.41 | 0.39 | | `look_at_rh` | 16.4 | 10.4 |
+| `vec4_sqrt` | 0.89 | 0.89 | | `frustum_extract` | 19.9 | 16.6 |
+| `quat_mul` | 1.81 | 1.24 | | `quat_from_mat4` | 3.01 | 2.92 |
+| `quat_normalize` | 1.82 | 1.54 | | `aabb_transform` | 3.09 | 2.64 |
+| `quat_slerp` | 15.9 | 9.3 | | `aabb_in_frustum` | 4.88 | 2.46 |
+| `quat_nlerp` | 4.98 | 4.43 | | `aabb_in_frustum_soa` | 4.28 | 2.16 |
+| `ray_sphere` hit / miss | 6.8 / 4.4 | 5.6 / 2.9 | | `frustum_cull_aabbs`, per box | 4.4 | 2.2 |
+| `ray_aabb` hit / miss | 6.0 / 5.5 | 5.8 / 5.1 | | `sphere_in_frustum` / `_soa` | 3.0 / 2.7 | 1.6 / 1.5 |
+| `ray_inv_aabb` | 4.61 | 4.37 | | `frustum_cull_spheres`, per sphere | 2.7 | 1.6 |
+| `ray_triangle` hit / miss | 9.7 / 11.8 | 7.8 / 6.1 | | `perlin_vec2` / `vec3` / `vec4` | 11.4 / 22.4 / 41.3 | 8.7 / 19.7 / 34.1 |
+
+Applying the weights of the 90-point profile below to these medians gives
+1.53 ns per weighted operation on the SSE2 build and 1.43 ns on the AVX2 build.
+The normalization rows include the Newton-Raphson refinement;
+`RG_MATH_RSQRT_MODE_RSQRT_RAW` returns roughly to the pre-refinement figures
+(`vec3_normalize` about 1.4 ns, `look_at_rh` about 13.6 ns) at 12-bit
+precision. No comparison libraries were present on this machine; the MSVC
+comparison tables follow.
+
 The following charts and tables are **historical results**.
 Use the runnable harness for comparisons of current builds; its batch methodology
 differs from the historical measurements, which do not establish current performance.

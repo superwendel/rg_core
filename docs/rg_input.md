@@ -149,3 +149,12 @@ while processing and consuming a frame. The header has normal include guards
 and all functions have internal linkage. A shared input state or queue requires
 caller synchronization, and SDL's event and window thread requirements still
 apply.
+
+## Performance
+
+On Linux x86-64 (Intel Core i3-1005G1, GCC 13.3, SDL3, `./build.sh bench_input`),
+`rg_input_begin_frame` plus `rg_input_sample` with real SDL getters costs about
+42 ns per frame with 1,024 tracked states and 28 ns with a single state, median
+of seven samples and three process runs on one pinned core. The keyboard
+snapshot copies use 16-byte SSE2 moves; `RG_INPUT_NO_SIMD` selects a portable
+loop that costs a few nanoseconds more.

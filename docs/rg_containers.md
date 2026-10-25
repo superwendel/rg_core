@@ -186,9 +186,13 @@ custom assertion handler returns.
 
 ## Performance and complexity
 
-In earlier measurements, one million pushes into a reserved `rg_array` completed
-in 0.69 ms versus 1.48 ms for `std::vector`. Reserved sparse-set
-insertion completed in 0.38 ms versus 2.01 ms for EnTT. See the
+On Linux x86-64 (Intel Core i3-1005G1, GCC 13.3, `./build.sh bench_containers`),
+one million pushes into a reserved `rg_array` take 0.78 ms versus 0.84 ms for
+`std::vector`, growing from empty 0.98 ms versus 3.0 ms, eight pushes into each
+of 200,000 fresh `rg_smallvec`s 1.2 ms versus 14.3 ms for unreserved
+`std::vector`s, and two million ring push/pop pairs 3.8 ms versus 4.1 ms for
+`std::deque`. In earlier MSVC measurements, reserved sparse-set insertion
+completed in 0.38 ms versus 2.01 ms for EnTT. See the
 [core benchmark report](benchmarks/rg_core.md#rg_containers) for the complete
 container results, methodology, and allocation caveats.
 

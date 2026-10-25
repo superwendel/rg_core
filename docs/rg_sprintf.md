@@ -165,6 +165,33 @@ names by substring. This harness uses a different sampling and output-consumptio
 method from the historical figure, so its measurements should be reported as
 new results rather than treated as a recreation of those exact timings.
 
+### Linux x86-64 results
+
+Measured with `./build.sh bench_sprintf` on an Intel Core i3-1005G1 laptop
+(Ubuntu 24.04, GCC 13.3, `-O2 -DNDEBUG`; the assembly backend is the GNU
+assembler build of the same x64 helper). Nanoseconds per call, median of seven
+samples and three process runs on one pinned core. `stb_sprintf` was not
+present on this machine.
+
+| Case | Portable C | x64 assembly | | Case | Portable C | x64 assembly |
+| --- | ---: | ---: | --- | --- | ---: | ---: |
+| `%d` | 15.0 | 12.6 | | `%s` | 13.2 | 13.8 |
+| `%08u` | 38.6 | 16.4 | | `%-20s` | 13.9 | 18.1 |
+| `%x` | 16.3 | 11.1 | | `%.*s` slice | 17.1 | 19.7 |
+| `%lld` | 39.7 | 17.1 | | bounded `%s` | 30.9 | 25.2 |
+| `%.6f` | 40.5 | 16.5 | | mixed status line | 148 | 80 |
+| `%.6e` | 43.0 | 23.9 | | 32-byte literal | 19.8 | 14.2 |
+| `%g` | 55.0 | 34.1 | | 4,096-byte literal | 105 | 126 |
+| `rg_u64toa`, 20 digits | 9.8 | 7.2 | | `%.*s` over 4,096 bytes | 46 | 48 |
+| `rg_dtoa` | 13.5 | 7.2 | | `rg_strlen`, 128 bytes | 5.2 | 3.8 |
+| builder `appendf` | 72.9 | 45.2 | | `rg_strlen`, 4,096 bytes | 38 | 53 |
+
+Literal text, bounded string scans, and `rg_strlen` now cost about the same in
+both backends because the portable header copies literal runs in bulk and uses
+`memchr`/`strlen`; the assembly backend's advantage is concentrated in numeric
+conversion. `%e` of a value near 1e300 costs about the same as `%e` of 1.5 in
+both backends.
+
 Enforcing string-precision bounds can affect code generation and placement
 elsewhere in the formatter. Measure representative formats, string lengths,
 and destination capacities with your build settings.
