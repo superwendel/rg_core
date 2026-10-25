@@ -263,7 +263,7 @@ static void test_sparse_set(void)
 	{
 		// Compile-time: the sparse array uses the configured index type.
 		typedef char sparse_index_type_matches[(sizeof(set.sparse[0]) == sizeof(RG_SPARSE_INDEX_TYPE)) ? 1 : -1];
-		CHECK(sizeof(sparse_index_type_matches) == 1u);
+		(void)sizeof(sparse_index_type_matches);
 	}
 
 	rg_sparse_set_insert(uint32_t, &set, 10u);
