@@ -2649,8 +2649,8 @@ RGINLINE char* rg_dtoa_sci_exact(double value, char* p, int precision, int* exp1
 	int log2_floor = rg_bit_length_u64(m) - 1 + e2;
 	int E = log2_floor >= 0 ? (log2_floor * 1233) >> 12 : -((((-log2_floor) * 1233) + 4095) >> 12) - 1;
 	int digits_wanted = precision + 1;
-	uint64_t d;
-	int state;
+	uint64_t d = 0;
+	int state = RG_REM_ZERO;
 	if (RG_SPRINTF_UNLIKELY(digits_wanted > 17) || RG_SPRINTF_UNLIKELY(rg_sci_scaled_fast(m, e2, precision - E, &d, &state) != 1) ||
 	    RG_SPRINTF_UNLIKELY(d == 0))
 	{
