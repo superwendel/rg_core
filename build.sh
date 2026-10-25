@@ -16,6 +16,8 @@ read -r -a user_cppflags <<< "${CPPFLAGS:-}"
 read -r -a user_cflags <<< "${CFLAGS:-}"
 read -r -a user_cxxflags <<< "${CXXFLAGS:-}"
 read -r -a user_ldflags <<< "${LDFLAGS:-}"
+# Optional command prefix for running test binaries (an emulator or valgrind).
+read -r -a test_runner <<< "${RG_TEST_RUNNER:-}"
 feature_flags=(-D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L)
 # _POSIX_C_SOURCE alone hides BSD extensions such as MAP_ANON on macOS.
 if [[ $(uname -s) == Darwin ]]; then feature_flags+=(-D_DARWIN_C_SOURCE); fi
@@ -39,7 +41,8 @@ Usage: ./build.sh [target] [benchmark arguments...]
   bench_regression      math, sprintf, storage, input, and prof
   clean                 remove only native Linux build artifacts
 Environment: CC, CXX, CPPFLAGS, CFLAGS, CXXFLAGS, LDFLAGS,
-             RG_BUILD_SIMD=auto|off, RG_BENCH_BUILD_ONLY=1, RG_BENCH_DEPS
+             RG_BUILD_SIMD=auto|off, RG_BENCH_BUILD_ONLY=1, RG_BENCH_DEPS,
+             RG_TEST_RUNNER (command prefix for test binaries, e.g. qemu-aarch64)
 SDL3 is discovered through pkg-config sdl3. Aggregate targets skip missing SDL3;
 explicit SDL/input targets require it. AVX2/FMA and assembly runs are host gated.
 EOF
@@ -66,8 +69,8 @@ int main(int argc, char **argv)
     return 1;
 }
 EOF
-    if "$test_output/cpu_probe" avx2; then have_avx2=1; fi
-    if "$test_output/cpu_probe" fma; then have_fma=1; fi
+    if "${test_runner[@]}" "$test_output/cpu_probe" avx2; then have_avx2=1; fi
+    if "${test_runner[@]}" "$test_output/cpu_probe" fma; then have_fma=1; fi
     echo "Host capabilities: AVX2=$have_avx2 FMA=$have_fma"
 }
 
@@ -101,7 +104,7 @@ test_case() {
     echo "Building $name..."
     "${cc[@]}" "${test_flags[@]}" "$repo/tests/$source" "$@" \
         "${user_ldflags[@]}" -lm -o "$test_output/$name"
-    "$test_output/$name"
+    "${test_runner[@]}" "$test_output/$name"
 }
 
 test_includes() {

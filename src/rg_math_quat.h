@@ -70,7 +70,7 @@ RG_MATH_EXTERN_C_END
 // Quaternion Implementation
 // =============================================================================
 
-#if defined(RG_MATH_SSE)
+#if defined(RG_MATH_SIMD)
 RGINLINE __m128 rg_math_quat_dot4_ps(__m128 a, __m128 b)
 {
 	__m128 mul = _mm_mul_ps(a, b);
@@ -97,7 +97,7 @@ RGINLINE void rg_quat_init(rg_quat* q, f32 x, f32 y, f32 z, f32 w)
 
 RGINLINE void rg_quat_copy(const rg_quat* q, rg_quat* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	out->simd = q->simd;
 #else
 	out->x = q->x;
@@ -109,7 +109,7 @@ RGINLINE void rg_quat_copy(const rg_quat* q, rg_quat* out)
 
 RGINLINE void rg_quat_identity(rg_quat* q)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	q->simd = _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f);
 #else
 	q->x = 0.0f;
@@ -121,7 +121,7 @@ RGINLINE void rg_quat_identity(rg_quat* q)
 
 RGINLINE void rg_quat_identity_array(rg_quat* q, size_t count)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 identity = _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f);
 	if (count == 4)
 	{
@@ -145,7 +145,7 @@ RGINLINE void rg_quat_identity_array(rg_quat* q, size_t count)
 
 RGINLINE void rg_quat_make(const f32* src, rg_quat* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	out->simd = _mm_loadu_ps(src);
 #else
 	out->x = src[0];
@@ -274,7 +274,7 @@ RGINLINE void rg_quat_from_norm_pair_fast(const rg_vec3* a, const rg_vec3* b, rg
 
 RGINLINE f32 rg_quat_dot(const rg_quat* a, const rg_quat* b)
 {
-#if defined(RG_MATH_SSE)
+#if defined(RG_MATH_SIMD)
 	return _mm_cvtss_f32(rg_math_quat_dot4_ps(a->simd, b->simd));
 #else
 	return a->x * b->x + a->y * b->y + a->z * b->z + a->w * b->w;
@@ -299,7 +299,7 @@ RGINLINE f32 rg_quat_real(const rg_quat* q)
 
 RGINLINE void rg_quat_imag(const rg_quat* q, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, q->simd);
 #else
 	out->x = q->x;
@@ -313,7 +313,7 @@ RGINLINE void rg_quat_imag(const rg_quat* q, rg_vec3* out)
 
 RGINLINE void rg_quat_imagn(const rg_quat* q, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && defined(RG_MATH_FAST_NORMALIZE)
+#if defined(RG_MATH_SIMD) && defined(RG_MATH_FAST_NORMALIZE)
 	// Zero w so the 4-lane dot covers xyz only and the output pad is 0.
 	__m128 v = _mm_and_ps(q->simd, _mm_castsi128_ps(_mm_setr_epi32(-1, -1, -1, 0)));
 	__m128 len_sq = rg_math_quat_dot4_ps(v, v);
@@ -360,7 +360,7 @@ RGINLINE void rg_quat_axis(const rg_quat* q, rg_vec3* out)
 
 RGINLINE void rg_quat_conjugate(const rg_quat* q, rg_quat* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 sign = _mm_castsi128_ps(_mm_set_epi32(0, (int)0x80000000u, (int)0x80000000u, (int)0x80000000u));
 	out->simd = _mm_xor_ps(q->simd, sign);
 #else
@@ -373,7 +373,7 @@ RGINLINE void rg_quat_conjugate(const rg_quat* q, rg_quat* out)
 
 RGINLINE void rg_quat_inv(const rg_quat* q, rg_quat* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 v = q->simd;
 	__m128 len_sq = rg_math_quat_dot4_ps(v, v);
 	__m128 sign = _mm_castsi128_ps(_mm_set_epi32(0, (int)0x80000000u, (int)0x80000000u, (int)0x80000000u));
@@ -388,7 +388,7 @@ RGINLINE void rg_quat_inv(const rg_quat* q, rg_quat* out)
 	RG_MATH_ASSERT(len_sq != 0.0f);
 #endif
 	f32 inv = 1.0f / len_sq;
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 sign = _mm_castsi128_ps(_mm_set_epi32(0, (int)0x80000000u, (int)0x80000000u, (int)0x80000000u));
 	__m128 conj = _mm_xor_ps(q->simd, sign);
 	__m128 scale = _mm_set1_ps(inv);
@@ -404,7 +404,7 @@ RGINLINE void rg_quat_inv(const rg_quat* q, rg_quat* out)
 
 RGINLINE void rg_quat_add(const rg_quat* a, const rg_quat* b, rg_quat* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	out->simd = _mm_add_ps(a->simd, b->simd);
 #else
 	out->x = a->x + b->x;
@@ -416,7 +416,7 @@ RGINLINE void rg_quat_add(const rg_quat* a, const rg_quat* b, rg_quat* out)
 
 RGINLINE void rg_quat_sub(const rg_quat* a, const rg_quat* b, rg_quat* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	out->simd = _mm_sub_ps(a->simd, b->simd);
 #else
 	out->x = a->x - b->x;
@@ -428,7 +428,7 @@ RGINLINE void rg_quat_sub(const rg_quat* a, const rg_quat* b, rg_quat* out)
 
 RGINLINE void rg_quat_mul(const rg_quat* a, const rg_quat* b, rg_quat* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = a->simd;
 	__m128 bv = b->simd;
 	__m128 sign_x = _mm_castsi128_ps(_mm_set_epi32((int)0x80000000u, 0, (int)0x80000000u, 0));
@@ -464,7 +464,7 @@ RGINLINE void rg_quat_mul(const rg_quat* a, const rg_quat* b, rg_quat* out)
 
 RGINLINE void rg_quat_normalize(const rg_quat* q, rg_quat* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 v = q->simd;
 	__m128 dot = rg_math_quat_dot4_ps(v, v);
 #ifndef RG_MATH_UNSAFE_NORMALIZE
@@ -495,7 +495,7 @@ RGINLINE void rg_quat_normalize(const rg_quat* q, rg_quat* out)
 #else
 	f32 inv_len = rg_rsqrtf(len_sq);
 #endif
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 inv = _mm_set1_ps(inv_len);
 	out->simd = _mm_mul_ps(q->simd, inv);
 #else
@@ -514,7 +514,7 @@ RGINLINE void rg_quat_normalize_to(const rg_quat* q, rg_quat* out)
 
 RGINLINE void rg_quat_lerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 av = a->simd;
 	__m128 bv = b->simd;
 	__m128 tv = _mm_set1_ps(t);
@@ -534,7 +534,7 @@ RGINLINE void rg_quat_lerpc(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 
 RGINLINE void rg_quat_nlerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = a->simd;
 	__m128 bv = b->simd;
 	__m128 dot = rg_math_quat_dot4_ps(av, bv);
@@ -579,7 +579,7 @@ RGINLINE void rg_quat_nlerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 		return;
 	}
 #endif
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	f32 inv_len = _mm_cvtss_f32(rg_math_rsqrt_ss(_mm_set_ss(len_sq)));
 #else
 	f32 inv_len = rg_rsqrtf(len_sq);
@@ -631,7 +631,7 @@ RGINLINE void rg__quat_slerp_weights(f32 cos_theta, f32 t, f32* scale0, f32* sca
 
 RGINLINE void rg_quat_slerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = a->simd;
 	__m128 bv = b->simd;
 	__m128 dotv = rg_math_quat_dot4_ps(av, bv);
@@ -749,7 +749,7 @@ RGINLINE void rg_quat_slerp(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* 
 
 RGINLINE void rg_quat_slerp_fast(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = a->simd;
 	__m128 bv = b->simd;
 	__m128 dotv = rg_math_quat_dot4_ps(av, bv);
@@ -842,7 +842,7 @@ RGINLINE void rg_quat_slerp_fast(const rg_quat* a, const rg_quat* b, f32 t, rg_q
 
 RGINLINE void rg_quat_slerp_longest(const rg_quat* a, const rg_quat* b, f32 t, rg_quat* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = a->simd;
 	__m128 bv = b->simd;
 	f32 cos_theta = _mm_cvtss_f32(rg_math_quat_dot4_ps(av, bv));
@@ -1157,7 +1157,7 @@ RGINLINE void rg_quat_rotate_atm(rg_mat4* out, const rg_quat* q, const rg_vec3* 
 
 RGINLINE void rg_quat_rotatev3(const rg_quat* q, const rg_vec3* v, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 qv = q->simd;
 	__m128 vv = RG_VEC3_LOAD(v);
 	__m128 q_yzx = _mm_shuffle_ps(qv, qv, _MM_SHUFFLE(3, 0, 2, 1));

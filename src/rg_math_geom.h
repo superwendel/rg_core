@@ -876,7 +876,7 @@ RGINLINE void rg_ray_at(const rg_ray* ray, f32 t, rg_vec3* out)
 // a parallel slab into +-huge distances instead of NaN from 0 * inf.
 #define RG_RAY_DIR_MIN 1e-30f
 
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 RGINLINE __m128 rg__ray_inv_dir_ps(__m128 dir)
 {
 	const __m128 neg_zero = _mm_set1_ps(-0.0f);
@@ -904,7 +904,7 @@ RGINLINE void rg_ray_inv_make(rg_ray_inv* out, const rg_ray* ray)
 {
 	out->origin = ray->origin;
 	out->dir = ray->dir;
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC3_STORE(&out->inv_dir, rg__ray_inv_dir_ps(RG_VEC3_LOAD(&ray->dir)));
 #else
 	out->inv_dir.x = rg__ray_inv_dir_component(ray->dir.x);
@@ -994,7 +994,7 @@ RGINLINE void rg_aabb_set(rg_aabb* aabb, const rg_vec3* min, const rg_vec3* max)
 
 RGINLINE void rg_aabb_from_center_extents(rg_aabb* aabb, const rg_vec3* center, const rg_vec3* extents)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 c = RG_VEC3_LOAD(center);
 	__m128 e = RG_VEC3_LOAD(extents);
 	RG_VEC3_STORE(&aabb->min, _mm_sub_ps(c, e));
@@ -1011,7 +1011,7 @@ RGINLINE void rg_aabb_from_center_extents(rg_aabb* aabb, const rg_vec3* center, 
 
 RGINLINE void rg_aabb_expand_point(rg_aabb* aabb, const rg_vec3* p)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 pv = RG_VEC3_LOAD(p);
 	RG_VEC3_STORE(&aabb->min, _mm_min_ps(RG_VEC3_LOAD(&aabb->min), pv));
 	RG_VEC3_STORE(&aabb->max, _mm_max_ps(RG_VEC3_LOAD(&aabb->max), pv));
@@ -1027,7 +1027,7 @@ RGINLINE void rg_aabb_expand_point(rg_aabb* aabb, const rg_vec3* p)
 
 RGINLINE void rg_aabb_union(const rg_aabb* a, const rg_aabb* b, rg_aabb* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 amin = RG_VEC3_LOAD(&a->min);
 	__m128 amax = RG_VEC3_LOAD(&a->max);
 	__m128 bmin = RG_VEC3_LOAD(&b->min);
@@ -1051,7 +1051,7 @@ RGINLINE void rg_aabb_merge(const rg_aabb* a, const rg_aabb* b, rg_aabb* out)
 
 RGINLINE void rg_aabb_crop(const rg_aabb* aabb, const rg_aabb* crop, rg_aabb* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 minv = _mm_max_ps(RG_VEC3_LOAD(&aabb->min), RG_VEC3_LOAD(&crop->min));
 	__m128 maxv = _mm_min_ps(RG_VEC3_LOAD(&aabb->max), RG_VEC3_LOAD(&crop->max));
 	RG_VEC3_STORE(&out->min, minv);
@@ -1072,7 +1072,7 @@ RGINLINE void rg_aabb_crop(const rg_aabb* aabb, const rg_aabb* crop, rg_aabb* ou
 
 RGINLINE void rg_aabb_crop_until(const rg_aabb* aabb, const rg_aabb* crop, const rg_aabb* clamp, rg_aabb* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 minv = _mm_min_ps(RG_VEC3_LOAD(&clamp->min),
 	                         _mm_max_ps(RG_VEC3_LOAD(&aabb->min), RG_VEC3_LOAD(&crop->min)));
 	__m128 maxv = _mm_max_ps(RG_VEC3_LOAD(&clamp->max),
@@ -1095,7 +1095,7 @@ RGINLINE void rg_aabb_crop_until(const rg_aabb* aabb, const rg_aabb* crop, const
 
 RGINLINE void rg_aabb_transform(const rg_aabb* aabb, const rg_mat4* m, rg_aabb* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	// Column form: center' = M * center, extent' = |M| * extent.
 	__m128 mn = RG_VEC3_LOAD(&aabb->min);
 	__m128 mx = RG_VEC3_LOAD(&aabb->max);
@@ -1171,7 +1171,7 @@ RGINLINE void rg_aabb_size(const rg_aabb* aabb, rg_vec3* out)
 
 RGINLINE f32 rg_aabb_radius(const rg_aabb* aabb)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 d = _mm_sub_ps(RG_VEC3_LOAD(&aabb->max), RG_VEC3_LOAD(&aabb->min));
 	__m128 sq = _mm_mul_ps(d, d);
 	__m128 len_sq = _mm_add_ss(_mm_add_ss(sq, _mm_shuffle_ps(sq, sq, _MM_SHUFFLE(1, 1, 1, 1))), _mm_shuffle_ps(sq, sq, _MM_SHUFFLE(2, 2, 2, 2)));
@@ -1201,7 +1201,7 @@ RGINLINE int rg_aabb_contains(const rg_aabb* aabb, const rg_aabb* other)
 
 RGINLINE int rg_aabb_overlaps(const rg_aabb* a, const rg_aabb* b)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 amin = RG_VEC3_LOAD(&a->min);
 	__m128 amax = RG_VEC3_LOAD(&a->max);
 	__m128 bmin = RG_VEC3_LOAD(&b->min);
@@ -1216,7 +1216,7 @@ RGINLINE int rg_aabb_overlaps(const rg_aabb* a, const rg_aabb* b)
 
 RGINLINE void rg_aabb_closest_point(const rg_aabb* aabb, const rg_vec3* p, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_min_ps(_mm_max_ps(RG_VEC3_LOAD(p), RG_VEC3_LOAD(&aabb->min)), RG_VEC3_LOAD(&aabb->max)));
 #else
 	out->x = rg_clampf(p->x, aabb->min.x, aabb->max.x);
@@ -1268,7 +1268,7 @@ RGINLINE void rg_aabb2_transform(const rg_aabb2* aabb, const rg_mat3* m, rg_aabb
 
 RGINLINE void rg_aabb2_merge(const rg_aabb2* a, const rg_aabb2* b, rg_aabb2* out)
 {
-#if defined(RG_MATH_SSE41) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_ROUND) && RG_MATH_MAX_PERF
 	__m128 av = _mm_loadu_ps(&a->min.x);
 	__m128 bv = _mm_loadu_ps(&b->min.x);
 	_mm_storeu_ps(&out->min.x, _mm_blend_ps(_mm_min_ps(av, bv), _mm_max_ps(av, bv), 0xC));
@@ -1282,7 +1282,7 @@ RGINLINE void rg_aabb2_merge(const rg_aabb2* a, const rg_aabb2* b, rg_aabb2* out
 
 RGINLINE void rg_aabb2_crop(const rg_aabb2* aabb, const rg_aabb2* crop, rg_aabb2* out)
 {
-#if defined(RG_MATH_SSE41) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_ROUND) && RG_MATH_MAX_PERF
 	__m128 av = _mm_loadu_ps(&aabb->min.x);
 	__m128 cv = _mm_loadu_ps(&crop->min.x);
 	_mm_storeu_ps(&out->min.x, _mm_blend_ps(_mm_max_ps(av, cv), _mm_min_ps(av, cv), 0xC));
@@ -1739,7 +1739,7 @@ RGINLINE __m256 rg__frustum_soa_aabb_dist(const rg_frustum_soa* f, __m256 mnx, _
 }
 #endif
 
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 // SSE2 select: mask ? b : a.
 RGINLINE __m128 rg__frustum_soa_select(__m128 a, __m128 b, __m128 mask)
 {
@@ -1755,7 +1755,7 @@ RGINLINE int rg_aabb_in_frustum_soa(const rg_aabb* aabb, const rg_frustum_soa* f
 	rg__frustum_soa_broadcast3(RG_VEC3_LOAD(&aabb->max), &mxx, &mxy, &mxz);
 	__m256 dist = rg__frustum_soa_aabb_dist(frustum, mnx, mny, mnz, mxx, mxy, mxz);
 	return _mm256_movemask_ps(_mm256_cmp_ps(dist, _mm256_setzero_ps(), _CMP_LT_OQ)) == 0;
-#elif defined(RG_MATH_SSE)
+#elif defined(RG_MATH_SIMD)
 	__m128 mn = RG_VEC3_LOAD(&aabb->min);
 	__m128 mx = RG_VEC3_LOAD(&aabb->max);
 	__m128 mnx = _mm_shuffle_ps(mn, mn, _MM_SHUFFLE(0, 0, 0, 0));
@@ -1798,7 +1798,7 @@ RGINLINE int rg_sphere_in_frustum_soa(const rg_sphere* sphere, const rg_frustum_
 	dist = rg__frustum_soa_fmadd(_mm256_load_ps(frustum->ny), cy, dist);
 	dist = rg__frustum_soa_fmadd(_mm256_load_ps(frustum->nz), cz, dist);
 	return _mm256_movemask_ps(_mm256_cmp_ps(dist, _mm256_setzero_ps(), _CMP_LT_OQ)) == 0;
-#elif defined(RG_MATH_SSE)
+#elif defined(RG_MATH_SIMD)
 	__m128 c = RG_VEC3_LOAD(&sphere->center);
 	__m128 cx = _mm_shuffle_ps(c, c, _MM_SHUFFLE(0, 0, 0, 0));
 	__m128 cy = _mm_shuffle_ps(c, c, _MM_SHUFFLE(1, 1, 1, 1));
@@ -1969,7 +1969,7 @@ RGINLINE void rg_frustum_corners_zo(const rg_mat4* inv_mat, rg_vec4 out[RG_FRUST
 
 RGINLINE void rg_frustum_center(const rg_vec4 corners[RG_FRUSTUM_CORNER_COUNT], rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 sum = RG_VEC4_LOAD(&corners[0]);
 	sum = _mm_add_ps(sum, RG_VEC4_LOAD(&corners[1]));
 	sum = _mm_add_ps(sum, RG_VEC4_LOAD(&corners[2]));
@@ -2038,7 +2038,7 @@ RGINLINE void rg_frustum_corners_at(const rg_vec4 corners[RG_FRUSTUM_CORNER_COUN
 	RG_MATH_ASSERT(far_dist != 0.0f);
 	f32 t = split_dist / far_dist;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 tv = _mm_set1_ps(t);
 	__m128 n0 = RG_VEC4_LOAD(&corners[RG_FRUSTUM_CORNER_LBN]);
 	__m128 n1 = RG_VEC4_LOAD(&corners[RG_FRUSTUM_CORNER_LTN]);
@@ -2112,7 +2112,7 @@ RGINLINE int rg_ray_plane(const rg_ray* ray, const rg_plane* plane, f32* t)
 	f32 oz = ray->origin.z;
 	f32 num = nx * ox + ny * oy + nz * oz + plane->d;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 inv = _mm_rcp_ss(_mm_set_ss(denom));
 	f32 t_hit = -num * _mm_cvtss_f32(inv);
 #else
@@ -2140,7 +2140,7 @@ RGINLINE int rg_ray_plane_fast(const rg_ray* ray, const rg_plane* plane, f32* t)
 	f32 oz = ray->origin.z;
 	f32 num = nx * ox + ny * oy + nz * oz + plane->d;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 inv = _mm_rcp_ss(_mm_set_ss(denom));
 	f32 t_hit = -num * _mm_cvtss_f32(inv);
 #else
@@ -2182,7 +2182,7 @@ RGINLINE int rg_ray_plane_point_normal(const rg_ray* ray, const rg_vec3* point, 
 	f32 py = point->y - oy;
 	f32 pz = point->z - oz;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 inv = _mm_rcp_ss(_mm_set_ss(denom));
 	f32 t_hit = (px * nx + py * ny + pz * nz) * _mm_cvtss_f32(inv);
 #else
@@ -2212,7 +2212,7 @@ RGINLINE int rg_ray_plane_point_normal_fast(const rg_ray* ray, const rg_vec3* po
 	f32 py = point->y - oy;
 	f32 pz = point->z - oz;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 inv = _mm_rcp_ss(_mm_set_ss(denom));
 	f32 t_hit = (px * nx + py * ny + pz * nz) * _mm_cvtss_f32(inv);
 #else
@@ -2557,7 +2557,7 @@ RGINLINE int rg_line_sphere(const rg_vec3* p0, const rg_vec3* p1, const rg_spher
 // so the lane is replaced by the unbounded interval (-inf, +inf) and the
 // origin is tested against the slab directly. Returns 0 when a parallel lane
 // lies outside its slab (a miss), 1 otherwise.
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 RGINLINE int rg__ray_aabb_slabs(__m128 origin, __m128 inv_dir, __m128 parallel, const rg_aabb* aabb, f32* near_t, f32* far_t)
 {
 	const __m128 zero = _mm_setzero_ps();
@@ -2616,7 +2616,7 @@ RGINLINE int rg_ray_aabb(const rg_ray* ray, const rg_aabb* aabb, f32* tmin, f32*
 {
 	f32 near_t;
 	f32 far_t;
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 dir = RG_VEC3_LOAD(&ray->dir);
 	int ok = rg__ray_aabb_slabs(RG_VEC3_LOAD(&ray->origin), rg__ray_inv_dir_ps(dir), _mm_cmpeq_ps(dir, _mm_setzero_ps()), aabb, &near_t, &far_t);
 #else
@@ -2641,7 +2641,7 @@ RGINLINE int rg_ray_inv_aabb(const rg_ray_inv* ray, const rg_aabb* aabb, f32* tm
 {
 	f32 near_t;
 	f32 far_t;
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	int ok = rg__ray_aabb_slabs(RG_VEC3_LOAD(&ray->origin), RG_VEC3_LOAD(&ray->inv_dir), _mm_cmpeq_ps(RG_VEC3_LOAD(&ray->dir), _mm_setzero_ps()), aabb, &near_t, &far_t);
 #else
 	int ok = rg__ray_aabb_slabs(&ray->origin, &ray->dir, &ray->inv_dir, aabb, &near_t, &far_t);
@@ -2655,7 +2655,7 @@ RGINLINE int rg_ray_inv_aabb(const rg_ray_inv* ray, const rg_aabb* aabb, f32* tm
 RGINLINE size_t rg_ray_inv_aabbs(const rg_ray_inv* ray, const rg_aabb* RG_MATH_RESTRICT boxes, size_t count, f32* RG_MATH_RESTRICT tmins, u8* RG_MATH_RESTRICT out)
 {
 	size_t hits = 0;
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	const __m128 origin = RG_VEC3_LOAD(&ray->origin);
 	const __m128 inv_dir = RG_VEC3_LOAD(&ray->inv_dir);
 	const __m128 parallel = _mm_cmpeq_ps(RG_VEC3_LOAD(&ray->dir), _mm_setzero_ps());
@@ -2664,7 +2664,7 @@ RGINLINE size_t rg_ray_inv_aabbs(const rg_ray_inv* ray, const rg_aabb* RG_MATH_R
 	{
 		f32 near_t;
 		f32 far_t;
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 		int ok = rg__ray_aabb_slabs(origin, inv_dir, parallel, &boxes[i], &near_t, &far_t);
 #else
 		int ok = rg__ray_aabb_slabs(&ray->origin, &ray->dir, &ray->inv_dir, &boxes[i], &near_t, &far_t);

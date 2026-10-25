@@ -185,8 +185,8 @@ intentional.
 ### Math
 
 - [`rg_math.h`](docs/rg_math.md) — SIMD-accelerated scalar, vector, matrix,
-  quaternion, camera, curve, geometry, color, and noise helpers with scalar
-  fallbacks.
+  quaternion, camera, curve, geometry, color, and noise helpers (SSE through
+  AVX2 on x86, NEON on ARM64) with scalar fallbacks.
 
 ### Formatting
 
@@ -222,7 +222,8 @@ results are machine- and workload-specific, so see the complete
 
 ## Build, test, and benchmark
 
-On Linux x86-64, with GCC C/C++ compilers and Bash available:
+On Linux or macOS (x86-64 or ARM64), with GCC or Clang C/C++ compilers and Bash
+available:
 
 ```sh
 ./build.sh test
@@ -233,9 +234,9 @@ On Linux x86-64, with GCC C/C++ compilers and Bash available:
 ```
 
 Pushes to `main` and every pull request run these on GitHub Actions for Linux
-(GCC and Clang, including both sanitizer passes), macOS arm64 (Clang, with the
-SDL-dependent tests when Homebrew provides SDL3), and Windows x64 (MSVC via
-`build.bat test`), and build every benchmark on each platform.
+x86-64 and arm64 (GCC and Clang, including both sanitizer passes), macOS arm64
+(Clang, with the SDL-dependent tests when Homebrew provides SDL3), and Windows
+x64 (MSVC via `build.bat test`), and build every benchmark on each platform.
 
 `test` is the default target. Individual modules and benchmark suites can be
 selected with targets such as `test_mem`, `test_sprintf`, `bench_math`, and

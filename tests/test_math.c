@@ -403,7 +403,7 @@ static void check_view(const rg_mat4* view, const rg_vec3* eye, const rg_vec3* t
 	f32 dz = target->z - eye->z;
 	f32 distance = sqrtf(dx * dx + dy * dy + dz * dz);
 	rg_mat4_mulv3(view, target, 1.0f, &transformed);
-#if RG_MATH_MAX_PERF && !defined(RG_MATH_SSE)
+#if RG_MATH_MAX_PERF && !defined(RG_MATH_SIMD)
 	// The explicit scalar fast rsqrt uses an unrefined approximation.
 	f32 tolerance = 0.05f * distance;
 #else
@@ -1222,15 +1222,21 @@ static void test_regressions(void)
 		CHECK(rg_ray_inv_aabb(&inv, &box, &tmin, &tmax));
 	}
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if (defined(RG_MATH_SSE) || defined(RG_MATH_NEON)) && RG_MATH_MAX_PERF
 	// Normalization of tiny vectors must not underflow with flush-to-zero on
 	// (checked builds treat such vectors as zero-length by design).
 	{
-		const unsigned int csr = _mm_getcsr();
 		rg_vec3 v, n;
 		rg_vec4 v4, n4;
 		f64 len;
+#if defined(RG_MATH_SSE)
+		const unsigned int csr = _mm_getcsr();
 		_mm_setcsr(csr | 0x8000u); // FTZ
+#else
+		uint64_t fpcr;
+		__asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+		__asm__ volatile("msr fpcr, %0" : : "r"(fpcr | (1ull << 24))); // FZ
+#endif
 		rg_vec3_set(&v, 1.3278711e-19f, 0.0f, 0.0f);
 		rg_vec3_normalize(&v, &n);
 		len = sqrt((f64)n.x * n.x + (f64)n.y * n.y + (f64)n.z * n.z);
@@ -1240,7 +1246,11 @@ static void test_regressions(void)
 		len = sqrt((f64)n4.x * n4.x + (f64)n4.y * n4.y + (f64)n4.z * n4.z + (f64)n4.w * n4.w);
 		CHECK(len > 0.999 && len < 1.001);
 		CHECK(rg_rsqrtf(2.0e-38f) > 0.999f * 7.0710678e18f && rg_rsqrtf(2.0e-38f) < 1.001f * 7.0710678e18f);
+#if defined(RG_MATH_SSE)
 		_mm_setcsr(csr);
+#else
+		__asm__ volatile("msr fpcr, %0" : : "r"(fpcr));
+#endif
 	}
 #endif
 
@@ -1267,8 +1277,8 @@ static void test_regressions(void)
 	// Normalization length error (vec3, vec4, quat) in the refined rsqrt mode. The
 	// SSE estimate plus one Newton-Raphson step stays within 1e-6; the scalar
 	// (Quake) estimate is only checked on the refined non-max-performance path.
-#if RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_RSQRT && (defined(RG_MATH_SSE) || !RG_MATH_MAX_PERF)
-#ifdef RG_MATH_SSE
+#if RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_RSQRT && (defined(RG_MATH_SIMD) || !RG_MATH_MAX_PERF)
+#ifdef RG_MATH_SIMD
 	const f64 length_tolerance = 1e-6;
 #else
 	const f64 length_tolerance = 1e-5;
@@ -1416,8 +1426,10 @@ int main(void)
 	printf("rg_math: %d checks, %d failures (%s)\n",
 	       tests_run,
 	       tests_failed,
-#ifdef RG_MATH_SSE
-	       "SIMD");
+#if defined(RG_MATH_SSE)
+	       "SSE");
+#elif defined(RG_MATH_NEON)
+	       "NEON");
 #else
 	       "scalar");
 #endif

@@ -104,6 +104,8 @@ RGINLINE void rg_arch_print(FILE* ostream)
 #if defined(RG_MATH_AVX)
 	rg_math_io_printf(ostream, " AVX");
 #endif
+#elif defined(RG_MATH_NEON)
+	rg_math_io_printf(ostream, "arm64 NEON");
 #else
 	rg_math_io_printf(ostream, "scalar");
 #endif

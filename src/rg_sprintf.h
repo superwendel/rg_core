@@ -278,6 +278,10 @@ RGINLINE void rg_builder_reset(RgBuilder* b);
 #include <immintrin.h>
 #define RG_HAS_AVX2 1
 #endif
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#define RG_HAS_NEON 1
+#endif
 #endif
 #endif
 
@@ -570,17 +574,32 @@ RGINLINE char* rg_to_hex_scalar(const uint8_t* data, size_t len, char* out, cons
 	return out;
 }
 
-#if defined(RG_HAS_SSSE3)
-// SIMD hex encoding using SSSE3 pshufb
+#if defined(RG_HAS_SSSE3) || defined(RG_HAS_NEON)
+// SIMD hex encoding: 16 input bytes -> 32 hex characters per iteration using
+// a byte-table lookup (pshufb on SSSE3, tbl on NEON).
 RGINLINE char* rg_to_hex_simd(const uint8_t* data, size_t len, char* out, int uppercase)
 {
+	char* p = out;
+	size_t i = 0;
+#if defined(RG_HAS_NEON)
+	const uint8x16_t hex_lut = vld1q_u8((const uint8_t*)(uppercase ? rg_hex_upper : rg_hex_lower));
+	const uint8x16_t mask_lo = vdupq_n_u8(0x0F);
+
+	for (; i + 16 <= len; i += 16)
+	{
+		uint8x16_t input = vld1q_u8(data + i);
+		uint8x16x2_t pair;
+		pair.val[0] = vqtbl1q_u8(hex_lut, vshrq_n_u8(input, 4));
+		pair.val[1] = vqtbl1q_u8(hex_lut, vandq_u8(input, mask_lo));
+		// Interleaved store writes the high nibble's character first.
+		vst2q_u8((uint8_t*)p, pair);
+		p += 32;
+	}
+#else
 	__m128i hex_lut = uppercase
 	                      ? _mm_setr_epi8('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F')
 	                      : _mm_setr_epi8('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f');
 	__m128i mask_lo = _mm_set1_epi8(0x0F);
-
-	char* p = out;
-	size_t i = 0;
 
 	// Process 16 bytes at a time -> 32 hex chars
 	for (; i + 16 <= len; i += 16)
@@ -604,6 +623,7 @@ RGINLINE char* rg_to_hex_simd(const uint8_t* data, size_t len, char* out, int up
 		_mm_storeu_si128((__m128i*)(p + 16), result_hi);
 		p += 32;
 	}
+#endif
 
 	// Handle remaining bytes with scalar
 	const char* hex_table = uppercase ? rg_hex_upper : rg_hex_lower;
@@ -623,7 +643,7 @@ RGINLINE char* rg_to_hex(const void* data, size_t len, char* out, int uppercase)
 {
 	const uint8_t* bytes = (const uint8_t*)data;
 
-#if defined(RG_HAS_SSSE3)
+#if defined(RG_HAS_SSSE3) || defined(RG_HAS_NEON)
 	if (len >= 16)
 	{
 		return rg_to_hex_simd(bytes, len, out, uppercase);

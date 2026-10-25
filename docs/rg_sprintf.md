@@ -45,7 +45,7 @@ Use the portable implementation directly when no assembly object is desired:
 Define configuration macros before inclusion when needed:
 
 ```c
-#define RG_SPRINTF_NO_SIMD  // Disable SIMD hexadecimal encoding
+#define RG_SPRINTF_NO_SIMD  // Disable SIMD hexadecimal encoding (SSSE3 or NEON)
 #define RG_SPRINTF_NO_ASM   // Force the hybrid header to select portable C
 #define RG_SPRINTF_SECURE   // Enable argument checks and parser limits
 #define RG_SPRINTF_ASSERT(x) custom_assert(x)

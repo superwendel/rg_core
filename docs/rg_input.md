@@ -134,15 +134,15 @@ Define options before including the header:
 ```c
 #define RG_INPUT_TEXT_BUFFER_SIZE 64
 #define RG_INPUT_ASSERT(condition) my_assert(condition)
-#define RG_INPUT_NO_SIMD // copy key state without SSE2
+#define RG_INPUT_NO_SIMD // copy key state without SSE2/NEON
 #include "rg_input.h"
 ```
 
 `rg_input_begin_frame` and `rg_input_sample` each copy the 512-entry key-state
 array. SDL's array is only 2-byte aligned and compilers lower a `memcpy` of it
-to a misaligned `rep movs`, so the header copies with an explicit 16-byte SSE2
-loop where SSE2 is available (always on x86-64) and an 8-byte loop otherwise.
-`RG_INPUT_NO_SIMD` selects the portable loop on x86 as well.
+to a misaligned `rep movs`, so the header copies with an explicit 16-byte loop
+using SSE2 on x86 (always available on x86-64) or NEON on AArch64, and an 8-byte
+loop otherwise. `RG_INPUT_NO_SIMD` selects the portable loop everywhere.
 
 `RgInputState`, queue storage, and queued text are caller-owned. Keep them alive
 while processing and consuming a frame. The header has normal include guards
@@ -156,5 +156,5 @@ On Linux x86-64 (Intel Core i3-1005G1, GCC 13.3, SDL3, `./build.sh bench_input`)
 `rg_input_begin_frame` plus `rg_input_sample` with real SDL getters costs about
 42 ns per frame with 1,024 tracked states and 28 ns with a single state, median
 of seven samples and three process runs on one pinned core. The keyboard
-snapshot copies use 16-byte SSE2 moves; `RG_INPUT_NO_SIMD` selects a portable
-loop that costs a few nanoseconds more.
+snapshot copies use 16-byte SSE2 moves (NEON on AArch64); `RG_INPUT_NO_SIMD`
+selects a portable loop that costs a few nanoseconds more.

@@ -778,6 +778,34 @@ static void test_hex_conversion(void)
 	CHECK(memcmp(input, output, sizeof(input)) == 0);
 	CHECK(rg_from_hex("abc", 3, output) == -1);
 	CHECK(rg_from_hex("zz", 2, output) == -1);
+
+	// Inputs of 16 bytes or more take the SIMD path (two full blocks plus a
+	// 7-byte tail here); compare every byte against the scalar reference.
+	{
+		static const char* const digits[2] = {"0123456789abcdef", "0123456789ABCDEF"};
+		uint8_t long_input[39];
+		uint8_t round_trip[sizeof(long_input)];
+		char long_hex[sizeof(long_input) * 2 + 1];
+		char expected[sizeof(long_input) * 2 + 1];
+		int upper;
+		size_t i;
+		for (i = 0; i < sizeof(long_input); i++) long_input[i] = (uint8_t)(i * 37u + 11u);
+		for (upper = 0; upper < 2; upper++)
+		{
+			for (i = 0; i < sizeof(long_input); i++)
+			{
+				expected[i * 2] = digits[upper][long_input[i] >> 4];
+				expected[i * 2 + 1] = digits[upper][long_input[i] & 0x0F];
+			}
+			expected[sizeof(long_input) * 2] = '\0';
+			memset(long_hex, '#', sizeof(long_hex));
+			end = rg_to_hex(long_input, sizeof(long_input), long_hex, upper);
+			CHECK(end == long_hex + sizeof(long_input) * 2);
+			CHECK(strcmp(long_hex, expected) == 0);
+			CHECK(rg_from_hex(long_hex, sizeof(long_input) * 2, round_trip) == (int)sizeof(long_input));
+			CHECK(memcmp(long_input, round_trip, sizeof(long_input)) == 0);
+		}
+	}
 }
 
 static void test_callback_output(void)

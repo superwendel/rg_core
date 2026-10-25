@@ -12,15 +12,17 @@ concurrency:
 
 jobs:
   linux:
-    name: Linux ${{ matrix.compiler }}
-    runs-on: ubuntu-24.04
+    name: Linux ${{ matrix.arch }} ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { compiler: gcc, cc: gcc, cxx: g++ }
-          - { compiler: clang, cc: clang, cxx: clang++ }
+          - { arch: x86-64, os: ubuntu-24.04, compiler: gcc, cc: gcc, cxx: g++ }
+          - { arch: x86-64, os: ubuntu-24.04, compiler: clang, cc: clang, cxx: clang++ }
+          - { arch: arm64, os: ubuntu-24.04-arm, compiler: gcc, cc: gcc, cxx: g++ }
+          - { arch: arm64, os: ubuntu-24.04-arm, compiler: clang, cc: clang, cxx: clang++ }
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}

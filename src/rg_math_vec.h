@@ -128,7 +128,7 @@ RGINLINE rg_vec3 rg_vec3_proj_fast(const rg_vec3* a, const rg_vec3* b);
 RGINLINE void rg_vec3_reflect(const rg_vec3* v, const rg_vec3* n, rg_vec3* out);
 RGINLINE int rg_vec3_refract(const rg_vec3* v, const rg_vec3* n, f32 eta, rg_vec3* out);
 RGINLINE void rg_vec3_normalize(const rg_vec3* v, rg_vec3* out);
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 RGINLINE void rg_vec3_scale_simd(const rg_vec3* v, __m128 scalar, rg_vec3* out);
 RGINLINE void rg_vec3_div_simd(const rg_vec3* v, __m128 inv, rg_vec3* out);
 #endif
@@ -227,7 +227,7 @@ RGINLINE void rg_vec4_proj(const rg_vec4* a, const rg_vec4* b, rg_vec4* out);
 RGINLINE void rg_vec4_reflect(const rg_vec4* v, const rg_vec4* n, rg_vec4* out);
 RGINLINE int rg_vec4_refract(const rg_vec4* v, const rg_vec4* n, f32 eta, rg_vec4* out);
 RGINLINE void rg_vec4_normalize(const rg_vec4* v, rg_vec4* out);
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 RGINLINE void rg_vec4_scale_simd(const rg_vec4* v, __m128 scalar, rg_vec4* out);
 #endif
 
@@ -464,7 +464,26 @@ RGINLINE rg_vec4i rg_make_vec4i(i32 x, i32 y, i32 z, i32 w);
 
 RG_MATH_EXTERN_C_END
 
-#if defined(RG_MATH_SSE)
+#if defined(RG_MATH_SIMD)
+#if defined(RG_MATH_NEON)
+// (x + y) + z, the same association as the SSE path, via a pairwise add.
+RGINLINE f32 rg_math_vec_dot3_f32(__m128 a, __m128 b)
+{
+	__m128 mul = vmulq_f32(a, b);
+	return vaddv_f32(vget_low_f32(mul)) + vgetq_lane_f32(mul, 2);
+}
+
+RGINLINE __m128 rg_math_vec_dot3_ps(__m128 a, __m128 b)
+{
+	return vdupq_n_f32(rg_math_vec_dot3_f32(a, b));
+}
+
+// Lane-0 dot product of xyz (upper lanes unspecified).
+RGINLINE __m128 rg_math_vec_dot3_ss(__m128 a, __m128 b)
+{
+	return vsetq_lane_f32(rg_math_vec_dot3_f32(a, b), a, 0);
+}
+#else
 RGINLINE __m128 rg_math_vec_dot3_ps(__m128 a, __m128 b)
 {
 	__m128 mul = _mm_mul_ps(a, b);
@@ -484,8 +503,9 @@ RGINLINE __m128 rg_math_vec_dot3_ss(__m128 a, __m128 b)
 	shuf = _mm_movehl_ps(shuf, mul);
 	return _mm_add_ss(sums, shuf);
 }
+#endif
 
-#if defined(RG_MATH_SSE2)
+#if defined(RG_MATH_SIMD_I32)
 // floorf() for four lanes without SSE4.1: truncate and fix up negatives.
 // |x| >= 2^23 (already integral), +-inf and NaN pass through unchanged;
 // the sign of zero is preserved, so results match floorf() bit for bit.
@@ -513,7 +533,7 @@ RGINLINE void rg_vec2_set(rg_vec2* v, f32 x, f32 y)
 
 RGINLINE void rg_vec2_add(const rg_vec2* a, const rg_vec2* b, rg_vec2* out)
 {
-#if defined(RG_MATH_SSE2) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_I32) && RG_MATH_MAX_PERF
 	__m128 av = _mm_castsi128_ps(_mm_loadl_epi64((const __m128i*)a->data));
 	__m128 bv = _mm_castsi128_ps(_mm_loadl_epi64((const __m128i*)b->data));
 	__m128 sum = _mm_add_ps(av, bv);
@@ -552,7 +572,7 @@ RGINLINE rg_vec2 rg_vec2_sub_fast(rg_vec2 a, rg_vec2 b)
 
 RGINLINE void rg_vec2_scale(const rg_vec2* v, f32 s, rg_vec2* out)
 {
-#if defined(RG_MATH_SSE2) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_I32) && RG_MATH_MAX_PERF
 	__m128 vv = _mm_castsi128_ps(_mm_loadl_epi64((const __m128i*)v->data));
 	__m128 scaled = _mm_mul_ps(vv, _mm_set1_ps(s));
 	_mm_storel_epi64((__m128i*)out->data, _mm_castps_si128(scaled));
@@ -704,7 +724,7 @@ RGINLINE int rg_vec2_refract(const rg_vec2* v, const rg_vec2* n, f32 eta, rg_vec
 
 RGINLINE void rg_vec2_normalize(const rg_vec2* v, rg_vec2* out)
 {
-#if defined(RG_MATH_SSE2) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_I32) && RG_MATH_MAX_PERF
 	__m128 vv = _mm_castsi128_ps(_mm_loadl_epi64((const __m128i*)v->data));
 	f32 x = v->x;
 	f32 y = v->y;
@@ -826,7 +846,7 @@ RGINLINE void rg_vec2_sign(const rg_vec2* v, rg_vec2* out)
 
 RGINLINE void rg_vec2_abs(const rg_vec2* v, rg_vec2* out)
 {
-#if defined(RG_MATH_SSE2) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_I32) && RG_MATH_MAX_PERF
 	__m128i bits = _mm_loadl_epi64((const __m128i*)v->data);
 	bits = _mm_and_si128(bits, _mm_set1_epi32(0x7FFFFFFF));
 	_mm_storel_epi64((__m128i*)out->data, bits);
@@ -857,7 +877,7 @@ RGINLINE void rg_vec2_mods(const rg_vec2* v, f32 s, rg_vec2* out)
 
 RGINLINE void rg_vec2_steps(f32 edge, const rg_vec2* v, rg_vec2* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 vv = _mm_castsi128_ps(_mm_loadl_epi64((const __m128i*)v));
 	__m128 cmp = _mm_cmplt_ps(vv, _mm_set1_ps(edge));
 	__m128 r = _mm_andnot_ps(cmp, _mm_set1_ps(1.0f));
@@ -950,7 +970,7 @@ RGINLINE void rg_vec2_mul(const rg_vec2* a, const rg_vec2* b, rg_vec2* out)
 RGINLINE void rg_vec2_scale_as(const rg_vec2* v, f32 s, rg_vec2* out)
 {
 #if RG_MATH_MAX_PERF
-#if defined(RG_MATH_SSE)
+#if defined(RG_MATH_SIMD)
 	__m128 vv = _mm_castsi128_ps(_mm_loadl_epi64((const __m128i*)v));
 	__m128 sq = _mm_mul_ps(vv, vv);
 	__m128 len_sq = _mm_add_ss(sq, _mm_shuffle_ps(sq, sq, _MM_SHUFFLE(1, 1, 1, 1)));
@@ -1140,7 +1160,7 @@ RGINLINE void rg_vec2_swizzle(const rg_vec2* v, int mask, rg_vec2* out)
 
 RGINLINE void rg_vec2_step(const rg_vec2* edge, const rg_vec2* v, rg_vec2* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 ev = _mm_castsi128_ps(_mm_loadl_epi64((const __m128i*)edge));
 	__m128 vv = _mm_castsi128_ps(_mm_loadl_epi64((const __m128i*)v));
 	__m128 cmp = _mm_cmplt_ps(vv, ev);
@@ -1158,7 +1178,7 @@ RGINLINE void rg_vec2_step(const rg_vec2* edge, const rg_vec2* v, rg_vec2* out)
 
 RGINLINE void rg_vec3_set(rg_vec3* v, f32 x, f32 y, f32 z)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC3_STORE(v, _mm_setr_ps(x, y, z, 0.0f));
 #else
 	RG_UNUSED(v);
@@ -1171,7 +1191,7 @@ RGINLINE void rg_vec3_set(rg_vec3* v, f32 x, f32 y, f32 z)
 
 RGINLINE void rg_vec3_add(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_add_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b)));
 #else
 	const rg_vec3* a_aligned = RG_MATH_ASSUME_ALIGNED(a, 16);
@@ -1188,7 +1208,7 @@ RGINLINE void rg_vec3_add(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_sub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC3_STORE(out, _mm_sub_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b)));
 #else
 	out->x = a->x - b->x;
@@ -1200,7 +1220,7 @@ RGINLINE void rg_vec3_sub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 RGINLINE void rg_vec3_scale(const rg_vec3* v, f32 s, rg_vec3* out)
 {
 #if RG_MATH_MAX_PERF
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC3_STORE(out, _mm_mul_ps(RG_VEC3_LOAD(v), _mm_set1_ps(s)));
 #else
 	out->x = v->x * s;
@@ -1208,7 +1228,7 @@ RGINLINE void rg_vec3_scale(const rg_vec3* v, f32 s, rg_vec3* out)
 	out->z = v->z * s;
 #endif
 #else
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 scalar = _mm_set1_ps(s);
 	RG_VEC3_STORE(out, _mm_mul_ps(RG_VEC3_LOAD(v), scalar));
 #else
@@ -1241,7 +1261,7 @@ RGINLINE f32 rg_vec3_dot(const rg_vec3* a, const rg_vec3* b)
 
 RGINLINE void rg_vec3_cross(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = RG_VEC3_LOAD(a);
 	__m128 bv = RG_VEC3_LOAD(b);
 	// (a x b) = (a * b.yzx - a.yzx * b).yzx: three shuffles instead of four.
@@ -1266,7 +1286,7 @@ RGINLINE void rg_vec3_cross(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 RGINLINE f32 rg_vec3_len(const rg_vec3* v)
 {
 #if RG_MATH_MAX_PERF
-#if defined(RG_MATH_SSE)
+#if defined(RG_MATH_SIMD)
 	__m128 vv = RG_VEC3_LOAD(v);
 	return _mm_cvtss_f32(_mm_sqrt_ss(rg_math_vec_dot3_ss(vv, vv)));
 #else
@@ -1295,7 +1315,7 @@ RGINLINE f32 rg_vec3_distance(const rg_vec3* a, const rg_vec3* b)
 
 RGINLINE void rg_vec3_min(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_min_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b)));
 #else
 	out->x = rg_minf(a->x, b->x);
@@ -1309,7 +1329,7 @@ RGINLINE void rg_vec3_min(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_max(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_max_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b)));
 #else
 	out->x = rg_maxf(a->x, b->x);
@@ -1323,7 +1343,7 @@ RGINLINE void rg_vec3_max(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_clamp(const rg_vec3* v, f32 min_val, f32 max_val, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 v3 = RG_VEC3_LOAD(v);
 	__m128 vmin = _mm_set1_ps(min_val);
 	__m128 vmax = _mm_set1_ps(max_val);
@@ -1340,7 +1360,7 @@ RGINLINE void rg_vec3_clamp(const rg_vec3* v, f32 min_val, f32 max_val, rg_vec3*
 
 RGINLINE void rg_vec3_lerp(const rg_vec3* a, const rg_vec3* b, f32 t, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = RG_VEC3_LOAD(a);
 	__m128 bv = RG_VEC3_LOAD(b);
 	__m128 tv = _mm_set1_ps(t);
@@ -1404,7 +1424,7 @@ RGINLINE rg_vec3 rg_vec3_proj_fast(const rg_vec3* a, const rg_vec3* b)
 	f32 bz = b->z;
 	f32 denom = bx * bx + by * by + bz * bz;
 	f32 dot = a->x * bx + a->y * by + a->z * bz;
-#if defined(RG_MATH_SSE)
+#if defined(RG_MATH_SIMD)
 	__m128 denom_v = _mm_set_ss(denom);
 	__m128 inv = _mm_rcp_ss(denom_v);
 	inv = _mm_mul_ss(inv, _mm_sub_ss(_mm_set_ss(2.0f), _mm_mul_ss(denom_v, inv)));
@@ -1422,7 +1442,7 @@ RGINLINE rg_vec3 rg_vec3_proj_fast(const rg_vec3* a, const rg_vec3* b)
 
 RGINLINE void rg_vec3_reflect(const rg_vec3* v, const rg_vec3* n, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 vv = RG_VEC3_LOAD(v);
 	__m128 nn = RG_VEC3_LOAD(n);
 	__m128 dot = rg_math_vec_dot3_ps(vv, nn);
@@ -1467,7 +1487,7 @@ RGINLINE int rg_vec3_refract(const rg_vec3* v, const rg_vec3* n, f32 eta, rg_vec
 
 RGINLINE void rg_vec3_normalize(const rg_vec3* v, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && (RG_MATH_MAX_PERF || defined(RG_MATH_FAST_NORMALIZE))
+#if defined(RG_MATH_SIMD) && (RG_MATH_MAX_PERF || defined(RG_MATH_FAST_NORMALIZE))
 	__m128 vv = RG_VEC3_LOAD(v);
 	__m128 len_sqv = rg_math_vec_dot3_ss(vv, vv);
 #ifndef RG_MATH_UNSAFE_NORMALIZE
@@ -1506,7 +1526,7 @@ RGINLINE void rg_vec3_normalize(const rg_vec3* v, rg_vec3* out)
 #endif
 }
 
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 RGINLINE void rg_vec3_scale_simd(const rg_vec3* v, __m128 scalar, rg_vec3* out)
 {
 	RG_VEC3_STORE(out, _mm_mul_ps(RG_VEC3_LOAD(v), scalar));
@@ -1624,7 +1644,7 @@ RGINLINE void rg_vec3_sign(const rg_vec3* v, rg_vec3* out)
 
 RGINLINE void rg_vec3_abs(const rg_vec3* v, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE2) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_I32) && RG_MATH_MAX_PERF
 	const __m128 mask = _mm_castsi128_ps(_mm_set1_epi32(0x7fffffff));
 	RG_VEC3_STORE(out, _mm_and_ps(RG_VEC3_LOAD(v), mask));
 #else
@@ -1640,7 +1660,7 @@ RGINLINE void rg_vec3_abs(const rg_vec3* v, rg_vec3* out)
 RGINLINE void rg_vec3_fract(const rg_vec3* v, rg_vec3* out)
 {
 	const f32 max_fract = 0.99999994f;
-#if defined(RG_MATH_SSE41) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_ROUND) && RG_MATH_MAX_PERF
 	const __m128 vv = RG_VEC3_LOAD(v);
 	const __m128 fract = _mm_sub_ps(vv, _mm_floor_ps(vv));
 	RG_VEC3_STORE(out, _mm_min_ps(fract, _mm_set1_ps(max_fract)));
@@ -1656,9 +1676,9 @@ RGINLINE void rg_vec3_fract(const rg_vec3* v, rg_vec3* out)
 
 RGINLINE void rg_vec3_floor(const rg_vec3* v, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE41) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_ROUND) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_floor_ps(RG_VEC3_LOAD(v)));
-#elif defined(RG_MATH_SSE2) && RG_MATH_MAX_PERF
+#elif defined(RG_MATH_SIMD_I32) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, rg_math_vec_floor_ps_sse2(RG_VEC3_LOAD(v)));
 #else
 	out->x = rg_floorf(v->x);
@@ -1759,7 +1779,7 @@ RGINLINE void rg_vec3_make(const f32* src, rg_vec3* out)
 
 RGINLINE void rg_vec3_adds(const rg_vec3* v, f32 s, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_add_ps(RG_VEC3_LOAD(v), _mm_set1_ps(s)));
 #else
 	out->x = v->x + s;
@@ -1773,7 +1793,7 @@ RGINLINE void rg_vec3_adds(const rg_vec3* v, f32 s, rg_vec3* out)
 
 RGINLINE void rg_vec3_subs(const rg_vec3* v, f32 s, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_sub_ps(RG_VEC3_LOAD(v), _mm_set1_ps(s)));
 #else
 	out->x = v->x - s;
@@ -1787,7 +1807,7 @@ RGINLINE void rg_vec3_subs(const rg_vec3* v, f32 s, rg_vec3* out)
 
 RGINLINE void rg_vec3_mul(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_mul_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b)));
 #else
 	out->x = a->x * b->x;
@@ -1842,7 +1862,7 @@ RGINLINE void rg_vec3_divs(const rg_vec3* v, f32 s, rg_vec3* out)
 
 RGINLINE void rg_vec3_addadd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_add_ps(RG_VEC3_LOAD(out), _mm_add_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b))));
 #else
 	out->x += a->x + b->x;
@@ -1856,7 +1876,7 @@ RGINLINE void rg_vec3_addadd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_subadd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_add_ps(RG_VEC3_LOAD(out), _mm_sub_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b))));
 #else
 	out->x += a->x - b->x;
@@ -1870,7 +1890,7 @@ RGINLINE void rg_vec3_subadd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_muladd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = RG_VEC3_LOAD(a);
 	__m128 bv = RG_VEC3_LOAD(b);
 	__m128 ov = RG_VEC3_LOAD(out);
@@ -1891,7 +1911,7 @@ RGINLINE void rg_vec3_muladd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_muladds(const rg_vec3* a, f32 s, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = RG_VEC3_LOAD(a);
 	__m128 sv = _mm_set1_ps(s);
 	__m128 ov = RG_VEC3_LOAD(out);
@@ -1912,7 +1932,7 @@ RGINLINE void rg_vec3_muladds(const rg_vec3* a, f32 s, rg_vec3* out)
 
 RGINLINE void rg_vec3_maxadd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_add_ps(RG_VEC3_LOAD(out), _mm_max_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b))));
 #else
 	out->x += rg_maxf(a->x, b->x);
@@ -1926,7 +1946,7 @@ RGINLINE void rg_vec3_maxadd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_minadd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_add_ps(RG_VEC3_LOAD(out), _mm_min_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b))));
 #else
 	out->x += rg_minf(a->x, b->x);
@@ -1940,7 +1960,7 @@ RGINLINE void rg_vec3_minadd(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_subsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_sub_ps(RG_VEC3_LOAD(out), _mm_sub_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b))));
 #else
 	out->x -= a->x - b->x;
@@ -1954,7 +1974,7 @@ RGINLINE void rg_vec3_subsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_addsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_sub_ps(RG_VEC3_LOAD(out), _mm_add_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b))));
 #else
 	out->x -= a->x + b->x;
@@ -1968,7 +1988,7 @@ RGINLINE void rg_vec3_addsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_mulsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, RG_MATH_FNMADD_PS(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b), RG_VEC3_LOAD(out)));
 #else
 	out->x -= a->x * b->x;
@@ -1982,7 +2002,7 @@ RGINLINE void rg_vec3_mulsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_mulsubs(const rg_vec3* a, f32 s, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, RG_MATH_FNMADD_PS(RG_VEC3_LOAD(a), _mm_set1_ps(s), RG_VEC3_LOAD(out)));
 #else
 	out->x -= a->x * s;
@@ -1996,7 +2016,7 @@ RGINLINE void rg_vec3_mulsubs(const rg_vec3* a, f32 s, rg_vec3* out)
 
 RGINLINE void rg_vec3_maxsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_sub_ps(RG_VEC3_LOAD(out), _mm_max_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b))));
 #else
 	out->x -= rg_maxf(a->x, b->x);
@@ -2010,7 +2030,7 @@ RGINLINE void rg_vec3_maxsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 
 RGINLINE void rg_vec3_minsub(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC3_STORE(out, _mm_sub_ps(RG_VEC3_LOAD(out), _mm_min_ps(RG_VEC3_LOAD(a), RG_VEC3_LOAD(b))));
 #else
 	out->x -= rg_minf(a->x, b->x);
@@ -2077,7 +2097,7 @@ RGINLINE f32 rg_vec3_norm_inf(const rg_vec3* v)
 
 RGINLINE void rg_vec3_crossn(const rg_vec3* a, const rg_vec3* b, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 av = RG_VEC3_LOAD(a);
 	__m128 bv = RG_VEC3_LOAD(b);
 	__m128 a_yzx = _mm_shuffle_ps(av, av, _MM_SHUFFLE(3, 0, 2, 1));
@@ -2242,7 +2262,7 @@ RGINLINE void rgi_vec3_rotate_padded_cols3(const f32* m, const rg_vec3* v, rg_ve
 	}
 #endif
 
-#if defined(RG_MATH_SSE) && defined(RG_MATH_FAST_NORMALIZE)
+#if defined(RG_MATH_SIMD) && defined(RG_MATH_FAST_NORMALIZE)
 	__m128 xyz_mask = _mm_castsi128_ps(_mm_setr_epi32(-1, -1, -1, 0));
 	__m128 x = _mm_and_ps(_mm_loadu_ps(m + 0), xyz_mask);
 	__m128 y = _mm_and_ps(_mm_loadu_ps(m + 4), xyz_mask);
@@ -2415,7 +2435,7 @@ RGINLINE void rg_vec3_smoothstep_uni(f32 edge0, f32 edge1, const rg_vec3* v, rg_
 
 RGINLINE void rg_vec3_smoothstep(const rg_vec3* edge0, const rg_vec3* edge1, const rg_vec3* v, rg_vec3* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 edge0v = RG_VEC3_LOAD(edge0);
 	__m128 edge1v = RG_VEC3_LOAD(edge1);
 	__m128 vv = RG_VEC3_LOAD(v);
@@ -2480,7 +2500,7 @@ RGINLINE void rg_vec3_faceforward(const rg_vec3* n, const rg_vec3* v, const rg_v
 
 RGINLINE void rg_vec4_set(rg_vec4* v, f32 x, f32 y, f32 z, f32 w)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC4_STORE(v, _mm_setr_ps(x, y, z, w));
 #else
 	v->x = x;
@@ -2492,7 +2512,7 @@ RGINLINE void rg_vec4_set(rg_vec4* v, f32 x, f32 y, f32 z, f32 w)
 
 RGINLINE void rg_vec4_add(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC4_STORE(out, _mm_add_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b)));
 #else
 	out->x = a->x + b->x;
@@ -2504,7 +2524,7 @@ RGINLINE void rg_vec4_add(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 
 RGINLINE void rg_vec4_sub(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC4_STORE(out, _mm_sub_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b)));
 #else
 	out->x = a->x - b->x;
@@ -2516,7 +2536,7 @@ RGINLINE void rg_vec4_sub(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 
 RGINLINE void rg_vec4_scale(const rg_vec4* v, f32 s, rg_vec4* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 scalar = _mm_set1_ps(s);
 	RG_VEC4_STORE(out, _mm_mul_ps(RG_VEC4_LOAD(v), scalar));
 #else
@@ -2529,7 +2549,7 @@ RGINLINE void rg_vec4_scale(const rg_vec4* v, f32 s, rg_vec4* out)
 #endif
 }
 
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 RGINLINE void rg_vec4_scale_simd(const rg_vec4* v, __m128 scalar, rg_vec4* out)
 {
 	RG_VEC4_STORE(out, _mm_mul_ps(RG_VEC4_LOAD(v), scalar));
@@ -2539,7 +2559,7 @@ RGINLINE void rg_vec4_scale_simd(const rg_vec4* v, __m128 scalar, rg_vec4* out)
 RGINLINE void rg_vec4_div(const rg_vec4* v, f32 s, rg_vec4* out)
 {
 	RG_MATH_ASSERT(s != 0.0f);
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 inv = _mm_set1_ps(1.0f / s);
 	RG_VEC4_STORE(out, _mm_mul_ps(RG_VEC4_LOAD(v), inv));
 #else
@@ -2553,7 +2573,9 @@ RGINLINE void rg_vec4_div(const rg_vec4* v, f32 s, rg_vec4* out)
 
 RGINLINE f32 rg_vec4_dot(const rg_vec4* a, const rg_vec4* b)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_NEON) && RG_MATH_MAX_PERF
+	return vaddvq_f32(vmulq_f32(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b)));
+#elif defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 mul = _mm_mul_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b));
 	__m128 sums = _mm_add_ps(mul, _mm_shuffle_ps(mul, mul, _MM_SHUFFLE(1, 0, 3, 2)));
 	sums = _mm_add_ps(sums, _mm_shuffle_ps(sums, sums, _MM_SHUFFLE(0, 1, 0, 1)));
@@ -2565,7 +2587,10 @@ RGINLINE f32 rg_vec4_dot(const rg_vec4* a, const rg_vec4* b)
 
 RGINLINE f32 rg_vec4_len(const rg_vec4* v)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_NEON) && RG_MATH_MAX_PERF
+	__m128 v4 = RG_VEC4_LOAD(v);
+	return vget_lane_f32(vsqrt_f32(vdup_n_f32(vaddvq_f32(vmulq_f32(v4, v4)))), 0);
+#elif defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 v4 = RG_VEC4_LOAD(v);
 	__m128 mul = _mm_mul_ps(v4, v4);
 	__m128 dot = _mm_add_ps(mul, _mm_shuffle_ps(mul, mul, _MM_SHUFFLE(1, 0, 3, 2)));
@@ -2581,7 +2606,7 @@ RGINLINE f32 rg_vec4_len(const rg_vec4* v)
 
 RGINLINE f32 rg_vec4_distance2(const rg_vec4* a, const rg_vec4* b)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 d = _mm_sub_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b));
 	__m128 mul = _mm_mul_ps(d, d);
 	__m128 sums = _mm_add_ps(mul, _mm_shuffle_ps(mul, mul, _MM_SHUFFLE(1, 0, 3, 2)));
@@ -2598,7 +2623,7 @@ RGINLINE f32 rg_vec4_distance2(const rg_vec4* a, const rg_vec4* b)
 
 RGINLINE f32 rg_vec4_distance(const rg_vec4* a, const rg_vec4* b)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 d = _mm_sub_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b));
 	__m128 mul = _mm_mul_ps(d, d);
 	__m128 dot = _mm_add_ps(mul, _mm_shuffle_ps(mul, mul, _MM_SHUFFLE(1, 0, 3, 2)));
@@ -2611,7 +2636,7 @@ RGINLINE f32 rg_vec4_distance(const rg_vec4* a, const rg_vec4* b)
 
 RGINLINE void rg_vec4_min(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC4_STORE(out, _mm_min_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b)));
 #else
 	out->x = rg_minf(a->x, b->x);
@@ -2623,7 +2648,7 @@ RGINLINE void rg_vec4_min(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 
 RGINLINE void rg_vec4_max(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC4_STORE(out, _mm_max_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b)));
 #else
 	out->x = rg_maxf(a->x, b->x);
@@ -2635,7 +2660,7 @@ RGINLINE void rg_vec4_max(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 
 RGINLINE void rg_vec4_clamp(const rg_vec4* v, f32 min_val, f32 max_val, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 v4 = RG_VEC4_LOAD(v);
 	__m128 vmin = _mm_set1_ps(min_val);
 	__m128 vmax = _mm_set1_ps(max_val);
@@ -2650,7 +2675,7 @@ RGINLINE void rg_vec4_clamp(const rg_vec4* v, f32 min_val, f32 max_val, rg_vec4*
 
 RGINLINE void rg_vec4_lerp(const rg_vec4* a, const rg_vec4* b, f32 t, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 av = RG_VEC4_LOAD(a);
 	__m128 bv = RG_VEC4_LOAD(b);
 	__m128 tv = _mm_set1_ps(t);
@@ -2689,7 +2714,7 @@ RGINLINE void rg_vec4_proj(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 
 RGINLINE void rg_vec4_reflect(const rg_vec4* v, const rg_vec4* n, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 vv = RG_VEC4_LOAD(v);
 	__m128 nn = RG_VEC4_LOAD(n);
 	__m128 mul = _mm_mul_ps(vv, nn);
@@ -2712,7 +2737,7 @@ RGINLINE void rg_vec4_reflect(const rg_vec4* v, const rg_vec4* n, rg_vec4* out)
 
 RGINLINE int rg_vec4_refract(const rg_vec4* v, const rg_vec4* n, f32 eta, rg_vec4* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 vv = RG_VEC4_LOAD(v);
 	__m128 nn = RG_VEC4_LOAD(n);
 	__m128 mul = _mm_mul_ps(vv, nn);
@@ -2756,7 +2781,7 @@ RGINLINE int rg_vec4_refract(const rg_vec4* v, const rg_vec4* n, f32 eta, rg_vec
 
 RGINLINE void rg_vec4_normalize(const rg_vec4* v, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 v4 = RG_VEC4_LOAD(v);
 	__m128 mul = _mm_mul_ps(v4, v4);
 	__m128 dot = _mm_add_ps(mul, _mm_shuffle_ps(mul, mul, _MM_SHUFFLE(1, 0, 3, 2)));
@@ -2927,9 +2952,9 @@ RGINLINE void rg_vec4_fract(const rg_vec4* v, rg_vec4* out)
 
 RGINLINE void rg_vec4_floor(const rg_vec4* v, rg_vec4* out)
 {
-#if defined(RG_MATH_SSE41) && RG_MATH_MAX_PERF && RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
+#if defined(RG_MATH_SIMD_ROUND) && RG_MATH_MAX_PERF && RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
 	RG_VEC4_STORE(out, _mm_floor_ps(RG_VEC4_LOAD(v)));
-#elif defined(RG_MATH_SSE2) && RG_MATH_MAX_PERF && RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
+#elif defined(RG_MATH_SIMD_I32) && RG_MATH_MAX_PERF && RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
 	RG_VEC4_STORE(out, rg_math_vec_floor_ps_sse2(RG_VEC4_LOAD(v)));
 #else
 	out->x = rg_floorf(v->x);
@@ -2949,7 +2974,7 @@ RGINLINE void rg_vec4_mods(const rg_vec4* v, f32 s, rg_vec4* out)
 
 RGINLINE void rg_vec4_steps(f32 edge, const rg_vec4* v, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 cmp = _mm_cmplt_ps(RG_VEC4_LOAD(v), _mm_set1_ps(edge));
 	RG_VEC4_STORE(out, _mm_andnot_ps(cmp, _mm_set1_ps(1.0f)));
 #else
@@ -2962,7 +2987,7 @@ RGINLINE void rg_vec4_steps(f32 edge, const rg_vec4* v, rg_vec4* out)
 
 RGINLINE void rg_vec4_stepr(const rg_vec4* edge, f32 v, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 cmp = _mm_cmplt_ps(_mm_set1_ps(v), RG_VEC4_LOAD(edge));
 	RG_VEC4_STORE(out, _mm_andnot_ps(cmp, _mm_set1_ps(1.0f)));
 #else
@@ -2975,7 +3000,9 @@ RGINLINE void rg_vec4_stepr(const rg_vec4* edge, f32 v, rg_vec4* out)
 
 RGINLINE f32 rg_vec4_hadd(const rg_vec4* v)
 {
-#ifdef RG_MATH_SSE
+#if defined(RG_MATH_NEON)
+	return vaddvq_f32(RG_VEC4_LOAD(v));
+#elif defined(RG_MATH_SIMD)
 	__m128 v4 = RG_VEC4_LOAD(v);
 	__m128 shuf = _mm_shuffle_ps(v4, v4, _MM_SHUFFLE(2, 3, 0, 1));
 	__m128 sums = _mm_add_ps(v4, shuf);
@@ -2989,7 +3016,7 @@ RGINLINE f32 rg_vec4_hadd(const rg_vec4* v)
 
 RGINLINE void rg_vec4_sqrt(const rg_vec4* v, rg_vec4* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF && RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF && RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
 	RG_VEC4_STORE(out, _mm_sqrt_ps(RG_VEC4_LOAD(v)));
 #else
 	out->x = rg_sqrtf(v->x);
@@ -3015,7 +3042,7 @@ RGINLINE void rg_vec4_copy3(const rg_vec4* v, rg_vec3* out)
 
 RGINLINE void rg_vec4_copy(const rg_vec4* v, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC4_STORE(out, RG_VEC4_LOAD(v));
 #else
 	out->x = v->x;
@@ -3027,7 +3054,7 @@ RGINLINE void rg_vec4_copy(const rg_vec4* v, rg_vec4* out)
 
 RGINLINE void rg_vec4_ucopy(const rg_vec4* v, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 tmp = _mm_loadu_ps(v->data);
 	_mm_storeu_ps(out->data, tmp);
 #else
@@ -3050,7 +3077,7 @@ RGINLINE void rg_vec4_one(rg_vec4* v)
 
 RGINLINE void rg_vec4_make(const f32* src, rg_vec4* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	RG_VEC4_STORE(out, _mm_loadu_ps(src));
 #else
 	out->x = src[0];
@@ -3062,7 +3089,7 @@ RGINLINE void rg_vec4_make(const f32* src, rg_vec4* out)
 
 RGINLINE void rg_vec4_adds(const rg_vec4* v, f32 s, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 scalar = _mm_set1_ps(s);
 	RG_VEC4_STORE(out, _mm_add_ps(RG_VEC4_LOAD(v), scalar));
 #else
@@ -3075,7 +3102,7 @@ RGINLINE void rg_vec4_adds(const rg_vec4* v, f32 s, rg_vec4* out)
 
 RGINLINE void rg_vec4_subs(const rg_vec4* v, f32 s, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 scalar = _mm_set1_ps(s);
 	RG_VEC4_STORE(out, _mm_sub_ps(RG_VEC4_LOAD(v), scalar));
 #else
@@ -3088,7 +3115,7 @@ RGINLINE void rg_vec4_subs(const rg_vec4* v, f32 s, rg_vec4* out)
 
 RGINLINE void rg_vec4_mul(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC4_STORE(out, _mm_mul_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b)));
 #else
 	out->x = a->x * b->x;
@@ -3123,7 +3150,7 @@ RGINLINE void rg_vec4_scale_as(const rg_vec4* v, f32 s, rg_vec4* out)
 RGINLINE void rg_vec4_divv(const rg_vec4* a, const rg_vec4* b, rg_vec4* out)
 {
 	RG_MATH_ASSERT(b->x != 0.0f && b->y != 0.0f && b->z != 0.0f && b->w != 0.0f);
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	RG_VEC4_STORE(out, _mm_div_ps(RG_VEC4_LOAD(a), RG_VEC4_LOAD(b)));
 #else
 	out->x = a->x / b->x;
@@ -3313,7 +3340,7 @@ RGINLINE void rg_vec4_mixc(const rg_vec4* a, const rg_vec4* b, f32 t, rg_vec4* o
 
 RGINLINE void rg_vec4_step(const rg_vec4* edge, const rg_vec4* v, rg_vec4* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 cmp = _mm_cmplt_ps(RG_VEC4_LOAD(v), RG_VEC4_LOAD(edge));
 	RG_VEC4_STORE(out, _mm_andnot_ps(cmp, _mm_set1_ps(1.0f)));
 #else
@@ -3334,7 +3361,7 @@ RGINLINE void rg_vec4_smoothstep_uni(f32 edge0, f32 edge1, const rg_vec4* v, rg_
 
 RGINLINE void rg_vec4_smoothstep(const rg_vec4* edge0, const rg_vec4* edge1, const rg_vec4* v, rg_vec4* out)
 {
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 edge0v = RG_VEC4_LOAD(edge0);
 	__m128 edge1v = RG_VEC4_LOAD(edge1);
 	__m128 vv = RG_VEC4_LOAD(v);
@@ -3626,7 +3653,7 @@ RGINLINE void rg_vec2i_abs(const rg_vec2i* v, rg_vec2i* out)
 
 RGINLINE void rg_vec3i_set(rg_vec3i* v, i32 x, i32 y, i32 z)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	v->simd = _mm_setr_epi32(x, y, z, 0);
 #else
 	v->x = x;
@@ -3638,7 +3665,7 @@ RGINLINE void rg_vec3i_set(rg_vec3i* v, i32 x, i32 y, i32 z)
 
 RGINLINE void rg_vec3i_add(const rg_vec3i* a, const rg_vec3i* b, rg_vec3i* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	out->simd = _mm_add_epi32(a->simd, b->simd);
 #else
 	out->x = a->x + b->x;
@@ -3650,7 +3677,7 @@ RGINLINE void rg_vec3i_add(const rg_vec3i* a, const rg_vec3i* b, rg_vec3i* out)
 
 RGINLINE void rg_vec3i_sub(const rg_vec3i* a, const rg_vec3i* b, rg_vec3i* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	out->simd = _mm_sub_epi32(a->simd, b->simd);
 #else
 	out->x = a->x - b->x;
@@ -3958,7 +3985,7 @@ RGINLINE void rg_vec3i_abs(const rg_vec3i* v, rg_vec3i* out)
 
 RGINLINE void rg_vec4i_set(rg_vec4i* v, i32 x, i32 y, i32 z, i32 w)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	v->simd = _mm_setr_epi32(x, y, z, w);
 #else
 	v->x = x;
@@ -3970,7 +3997,7 @@ RGINLINE void rg_vec4i_set(rg_vec4i* v, i32 x, i32 y, i32 z, i32 w)
 
 RGINLINE void rg_vec4i_add(const rg_vec4i* a, const rg_vec4i* b, rg_vec4i* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	out->simd = _mm_add_epi32(a->simd, b->simd);
 #else
 	out->x = a->x + b->x;
@@ -3982,7 +4009,7 @@ RGINLINE void rg_vec4i_add(const rg_vec4i* a, const rg_vec4i* b, rg_vec4i* out)
 
 RGINLINE void rg_vec4i_sub(const rg_vec4i* a, const rg_vec4i* b, rg_vec4i* out)
 {
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	out->simd = _mm_sub_epi32(a->simd, b->simd);
 #else
 	out->x = a->x - b->x;
@@ -4292,7 +4319,7 @@ RGINLINE rg_vec2 rg_make_vec2(f32 x, f32 y)
 
 RGINLINE rg_vec3 rg_make_vec3(f32 x, f32 y, f32 z)
 {
-#if defined(RG_MATH_SSE) && !defined(RG_MATH_VEC3_PLAIN)
+#if defined(RG_MATH_SIMD) && !defined(RG_MATH_VEC3_PLAIN)
 	rg_vec3 v;
 	v.simd = _mm_setr_ps(x, y, z, 0.0f);
 #else
@@ -4303,7 +4330,7 @@ RGINLINE rg_vec3 rg_make_vec3(f32 x, f32 y, f32 z)
 
 RGINLINE rg_vec4 rg_make_vec4(f32 x, f32 y, f32 z, f32 w)
 {
-#if defined(RG_MATH_SSE) && !defined(RG_MATH_VEC4_PLAIN)
+#if defined(RG_MATH_SIMD) && !defined(RG_MATH_VEC4_PLAIN)
 	rg_vec4 v;
 	v.simd = _mm_setr_ps(x, y, z, w);
 #else

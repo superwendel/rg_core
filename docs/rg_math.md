@@ -69,8 +69,24 @@ instructions follow the compiler target. For example, `/arch:AVX2` enables the
 corresponding optimized paths in an MSVC build and requires an AVX2-capable
 machine at runtime.
 
-Other architectures use the scalar implementation. Define
-`RG_MATH_NO_SIMD` to force that implementation on any target:
+On AArch64 with GCC 12+ or Clang (Apple silicon, Linux arm64, Android, iOS),
+the same SIMD code runs on NEON. `rg_math_core.h` defines `RG_MATH_NEON` and
+includes `rg_math_neon.h`, which implements the SSE intrinsic subset rg_math
+uses on top of NEON: `__m128` is `float32x4_t`, permutes compile to
+`ext`/`zip`/`tbl`, fused multiply-add is always available, and the hardware
+reciprocal square root estimate is refined with two `frsqrts` steps so
+normalization meets the same accuracy as the x86 build. The 128-bit paths are
+used where x86 has AVX variants; Clang generally produces tighter permute
+sequences than GCC. Including `rg_math_neon.h` and a third-party SSE-to-NEON
+header such as `sse2neon.h` in one translation unit is not supported. MSVC
+ARM64 builds and other architectures use the scalar implementation.
+
+The module headers select SIMD code through architecture-neutral gates:
+`RG_MATH_SIMD` (SSE or NEON), `RG_MATH_SIMD_I32` (SSE2 or NEON integer lanes),
+`RG_MATH_SIMD_ROUND` (SSE4.1 or NEON rounding and blends), `RG_MATH_FMA`, and
+`RG_MATH_AVX` (x86 only). `RG_MATH_SSE`, `RG_MATH_SSE2`, `RG_MATH_SSE41`, and
+`RG_MATH_NEON` still describe the target for code that needs to know. Define
+`RG_MATH_NO_SIMD` to force the scalar implementation on any target:
 
 ```c
 #define RG_MATH_NO_SIMD
@@ -441,6 +457,11 @@ build.bat test_math
 
 The target checks C builds with baseline x64 SIMD, AVX2, checked SIMD and scalar,
 plain-layout, reduced-umbrella, and all four clip-space configurations.
+`./build.sh test_math` runs the same matrix on Linux and macOS; on an AArch64
+host the default build exercises the NEON paths, and the summary line names the
+backend (`SSE`, `NEON`, or `scalar`). The suite can also be cross-compiled and
+run under an emulator by setting `CC` and `RG_TEST_RUNNER` (for example
+`qemu-aarch64`).
 Tests cover camera-space invariants, quaternion/matrix and signed-TRS round
 trips, asymmetric projection corners, frustum culling, and inverse/multiply
 aliasing and alignment contracts, along with representative functionality from

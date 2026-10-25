@@ -12,7 +12,7 @@
 
 RG_MATH_EXTERN_C_BEGIN
 
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 // Reciprocal square root estimates selected by RG_MATH_RSQRT_MODE (see rg_math_core.h).
 // rg_math_rsqrt_ss refines lane 0 only; upper lanes are unspecified.
 RGINLINE __m128 rg_math_rsqrt_ss(__m128 x)
@@ -21,6 +21,14 @@ RGINLINE __m128 rg_math_rsqrt_ss(__m128 x)
 	return _mm_rcp_ss(_mm_sqrt_ss(x));
 #elif RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_RSQRT_RAW
 	return _mm_rsqrt_ss(x);
+#elif defined(RG_MATH_NEON)
+	// Two FRSQRTS refinements take the 8-bit NEON estimate to full single
+	// precision; x*r is formed first, as in the SSE path below.
+	f32 v = vgetq_lane_f32(x, 0);
+	f32 r = vrsqrtes_f32(v);
+	r = r * vrsqrtss_f32(v * r, r);
+	r = r * vrsqrtss_f32(v * r, r);
+	return vsetq_lane_f32(r, x, 0);
 #else
 	// r = r * (1.5 - 0.5 * (x * r * r)); x*r*r is evaluated first so no
 	// intermediate underflows when x is near FLT_MIN with flush-to-zero on.
@@ -36,6 +44,10 @@ RGINLINE __m128 rg_math_rsqrt_ps(__m128 x)
 	return _mm_rcp_ps(_mm_sqrt_ps(x));
 #elif RG_MATH_RSQRT_MODE == RG_MATH_RSQRT_MODE_RSQRT_RAW
 	return _mm_rsqrt_ps(x);
+#elif defined(RG_MATH_NEON)
+	float32x4_t r = vrsqrteq_f32(x);
+	r = vmulq_f32(r, vrsqrtsq_f32(vmulq_f32(x, r), r));
+	return vmulq_f32(r, vrsqrtsq_f32(vmulq_f32(x, r), r));
 #else
 	__m128 r = _mm_rsqrt_ps(x);
 	__m128 xrr = _mm_mul_ps(_mm_mul_ps(x, r), r);
@@ -49,7 +61,7 @@ RGINLINE __m128 rg_math_rsqrt_ps(__m128 x)
 // =============================================================================
 
 #if RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 RGINLINE f32 rg_rsqrtf(f32 x)
 {
 	return _mm_cvtss_f32(rg_math_rsqrt_ss(_mm_set_ss(x)));
@@ -72,7 +84,7 @@ RGINLINE f32 rg_absf(f32 x)
 #else
 #define rg_absf(x) fabsf((x))
 #endif
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 RGINLINE f32 rg_sqrtf(f32 x)
 {
 	return _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(x)));
@@ -80,7 +92,7 @@ RGINLINE f32 rg_sqrtf(f32 x)
 #else
 #define rg_sqrtf(x) sqrtf((x))
 #endif
-#if defined(RG_MATH_SSE41) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD_ROUND) && RG_MATH_MAX_PERF
 RGINLINE f32 rg_floorf(f32 x)
 {
 	return _mm_cvtss_f32(_mm_floor_ss(_mm_setzero_ps(), _mm_set_ss(x)));
@@ -628,7 +640,7 @@ typedef union rg_float_bits
 // Fast inverse square root (SSE or Quake III algorithm)
 // -----------------------------------------------------------------------------
 
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 #if !(RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES)
 RGINLINE f32 rg_rsqrtf(f32 x)
 {
@@ -685,7 +697,7 @@ RGINLINE f32 rg_rsqrtf_fast(f32 x)
 }
 #endif
 
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 #if !(RG_MATH_USE_LIBC && RG_MATH_LIBC_ALIASES)
 RGINLINE f32 rg_sqrtf(f32 x)
 {
@@ -1129,7 +1141,7 @@ RGINLINE void rg_sincosf(f32 x, f32* out_sin, f32* out_cos)
 #endif
 }
 
-#if RG_MATH_MAX_PERF && defined(RG_MATH_SSE)
+#if RG_MATH_MAX_PERF && defined(RG_MATH_SIMD)
 RGINLINE void rg_sincosf4(__m128 x, __m128* out_sin, __m128* out_cos)
 {
 	const __m128 inv_tau = _mm_set1_ps(1.0f / RG_TAU);

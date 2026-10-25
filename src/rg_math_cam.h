@@ -122,7 +122,7 @@ RGINLINE void rg_mat4_frustum_rh_no(f32 left, f32 right, f32 bottom, f32 top,
 	f32 fn = -1.0f / (far_z - near_z);
 	f32 nv = 2.0f * near_z;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	_mm_store_ps(&out->m[0], _mm_setr_ps(nv * rl, 0.0f, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[4], _mm_setr_ps(0.0f, nv * tb, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[8], _mm_setr_ps((right + left) * rl, (top + bottom) * tb,
@@ -159,7 +159,7 @@ RGINLINE void rg_mat4_frustum_rh_zo(f32 left, f32 right, f32 bottom, f32 top,
 	f32 fn = -1.0f / (far_z - near_z);
 	f32 nv = 2.0f * near_z;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	_mm_store_ps(&out->m[0], _mm_setr_ps(nv * rl, 0.0f, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[4], _mm_setr_ps(0.0f, nv * tb, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[8], _mm_setr_ps((right + left) * rl, (top + bottom) * tb,
@@ -196,7 +196,7 @@ RGINLINE void rg_mat4_frustum_lh_no(f32 left, f32 right, f32 bottom, f32 top,
 	f32 fn = 1.0f / (far_z - near_z);
 	f32 nv = -2.0f * near_z;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	_mm_store_ps(&out->m[0], _mm_setr_ps(nv * rl, 0.0f, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[4], _mm_setr_ps(0.0f, nv * tb, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[8], _mm_setr_ps((right + left) * rl, (top + bottom) * tb,
@@ -233,7 +233,7 @@ RGINLINE void rg_mat4_frustum_lh_zo(f32 left, f32 right, f32 bottom, f32 top,
 	f32 fn = -1.0f / (far_z - near_z);
 	f32 nv = -2.0f * near_z;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	_mm_store_ps(&out->m[0], _mm_setr_ps(nv * rl, 0.0f, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[4], _mm_setr_ps(0.0f, nv * tb, 0.0f, 0.0f));
 	_mm_store_ps(&out->m[8], _mm_setr_ps((right + left) * rl, (top + bottom) * tb,
@@ -391,7 +391,7 @@ RGINLINE void rg_mat4_look_rh(const rg_vec3* eye, const rg_vec3* dir, const rg_v
 	f32 uy = sz * fx - sx * fz;
 	f32 uz = sx * fy - sy * fx;
 
-#if defined(RG_MATH_SSE) && RG_MATH_MAX_PERF
+#if defined(RG_MATH_SIMD) && RG_MATH_MAX_PERF
 	__m128 c0 = _mm_setr_ps(sx, ux, -fx, 0.0f);
 	__m128 c1 = _mm_setr_ps(sy, uy, -fy, 0.0f);
 	__m128 c2 = _mm_setr_ps(sz, uz, -fz, 0.0f);

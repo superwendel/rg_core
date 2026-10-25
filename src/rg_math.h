@@ -27,7 +27,7 @@
 //   #include "rg_math_noise.h"   // perlin noise helpers
 //
 // OPTIONS:
-//   #define RG_MATH_NO_SIMD      - Disable SIMD, use scalar fallback
+//   #define RG_MATH_NO_SIMD      - Disable SIMD (SSE/AVX on x86, NEON on AArch64), use scalar fallback
 //   #define RG_MATH_ASSERT(x)    - Custom assert macro
 //   #define RG_MATH_MAX_PERF 1   - Default: 1 (enables fastest normalize/length paths; skips sqrt safety checks; uses fast rsqrt)
 //   #define RG_MATH_VEC3_PLAIN   - Use f32[4] vec3 layout without __m128 union

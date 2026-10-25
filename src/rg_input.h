@@ -21,7 +21,7 @@
 // OPTIONS:
 //   #define RG_INPUT_TEXT_BUFFER_SIZE  - Text input buffer size (default: 32)
 //   #define RG_INPUT_ASSERT(x)         - Custom assert macro (default: assert)
-//   #define RG_INPUT_NO_SIMD           - Copy key state without SSE2
+//   #define RG_INPUT_NO_SIMD           - Copy key state without SSE2/NEON
 //
 // NOTES:
 //   - All functions have internal linkage and work in unity builds.
@@ -59,13 +59,19 @@
 
 // SDL's key-state array is only 2-byte aligned, and compilers lower the
 // 512-byte memcpy of it to a misaligned rep movs that costs several times an
-// explicit 16-byte loop. SSE2 is baseline on x86-64.
+// explicit 16-byte loop. SSE2 is baseline on x86-64 and NEON on AArch64.
 #if !defined(RG_INPUT_NO_SIMD) && \
     (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
 #define RG_INPUT_HAS_SSE2 1
+#define RG_INPUT_HAS_NEON 0
 #include <emmintrin.h>
+#elif !defined(RG_INPUT_NO_SIMD) && defined(__ARM_NEON) && (defined(__GNUC__) || defined(__clang__))
+#define RG_INPUT_HAS_SSE2 0
+#define RG_INPUT_HAS_NEON 1
+#include <arm_neon.h>
 #else
 #define RG_INPUT_HAS_SSE2 0
+#define RG_INPUT_HAS_NEON 0
 #endif
 
 // Mouse button indices (for rg_input_is_mouse_button_*)
@@ -369,6 +375,11 @@ RGINLINE void rg_input_copy_keys(bool* RG_RESTRICT dst, const bool* RG_RESTRICT 
 	{
 		_mm_storeu_si128((__m128i*)(out + offset),
 		                 _mm_loadu_si128((const __m128i*)(in + offset)));
+	}
+#elif RG_INPUT_HAS_NEON
+	for (; offset + 16u <= bytes; offset += 16u)
+	{
+		vst1q_u8(out + offset, vld1q_u8(in + offset));
 	}
 #else
 	for (; offset + 8u <= bytes; offset += 8u)

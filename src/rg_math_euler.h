@@ -156,7 +156,7 @@ RGINLINE void rg_mat4_euler(const rg_vec3* angles, rg_mat4* out)
 	rg_mat4_euler_xyz(angles, out);
 }
 
-#if RG_MATH_MAX_PERF && defined(RG_MATH_SSE)
+#if RG_MATH_MAX_PERF && defined(RG_MATH_SIMD)
 #define RG__EULER_SINCOS(angles, sx, cx, sy, cy, sz, cz)           \
 	do {                                                           \
 		__m128 rg__angles = _mm_setr_ps((angles)->x, (angles)->y,  \
@@ -210,7 +210,7 @@ RGINLINE void rgi_mat4_euler_xyz_sincos(rg_mat4* out, f32 sx, f32 cx, f32 sy, f3
 
 RGINLINE void rg_mat4_euler_xyz(const rg_vec3* angles, rg_mat4* out)
 {
-#if RG_MATH_MAX_PERF && defined(RG_MATH_SSE)
+#if RG_MATH_MAX_PERF && defined(RG_MATH_SIMD)
 	f32 sx = 0.0f;
 	f32 cx = 0.0f;
 	f32 sy = 0.0f;
@@ -551,7 +551,7 @@ RGINLINE void rg_quat_from_euler(const rg_vec3* angles, rg_quat* out)
 	rg_quat_from_euler_xyz(angles, out);
 }
 
-#if RG_MATH_MAX_PERF && defined(RG_MATH_SSE)
+#if RG_MATH_MAX_PERF && defined(RG_MATH_SIMD)
 #define RG__EULER_HALF_SINCOS(angles, xs, xc, ys, yc, zs, zc)           \
 	do {                                                                \
 		__m128 rg__half_angles = _mm_setr_ps((angles)->x * 0.5f,        \
@@ -582,7 +582,7 @@ RGINLINE void rg_quat_from_euler(const rg_vec3* angles, rg_quat* out)
 
 RGINLINE void rg_quat_from_euler_xyz(const rg_vec3* angles, rg_quat* out)
 {
-#if RG_MATH_MAX_PERF && defined(RG_MATH_SSE)
+#if RG_MATH_MAX_PERF && defined(RG_MATH_SIMD)
 	__m128 half_angles = _mm_setr_ps(angles->x * 0.5f, angles->y * 0.5f, angles->z * 0.5f, 0.0f);
 	__m128 sin_angles;
 	__m128 cos_angles;

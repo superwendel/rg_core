@@ -30,6 +30,13 @@
 #include <x86intrin.h>
 #define RG_MATH_SSE 1
 #endif
+#elif !defined(RG_MATH_NO_SIMD) && RG_ARCH_ARM64 && defined(__ARM_NEON) && \
+    (defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 12))
+// AArch64 always has NEON and fused multiply-add. rg_math_neon.h maps the SSE
+// vocabulary the module headers are written in onto NEON instructions; it needs
+// __builtin_shufflevector (Clang, GCC 12+). Other compilers stay scalar.
+#define RG_MATH_NEON 1
+#define RG_MATH_FMA 1
 #endif
 
 #ifdef RG_MATH_SSE
@@ -48,6 +55,28 @@
 #if defined(__SSE3__) || defined(__AVX__) || defined(__AVX2__) || defined(_M_AVX) || defined(_M_AVX2)
 #define RG_MATH_SSE3 1
 #endif
+#endif
+
+// Architecture-neutral gates used by the module headers. The RG_MATH_SSE*
+// macros above describe the x86 target; these describe what the SIMD code can
+// use on either x86 or AArch64.
+//   RG_MATH_SIMD        128-bit float lanes with the SSE vocabulary (SSE or NEON)
+//   RG_MATH_SIMD_I32    integer lanes, casts and conversions (SSE2 or NEON)
+//   RG_MATH_SIMD_ROUND  floor/ceil/round and blend (SSE4.1 or NEON)
+//   RG_MATH_FMA         fused multiply-add (FMA3 or NEON)
+//   RG_MATH_AVX         256-bit paths (x86 only; NEON uses the 128-bit paths)
+#if defined(RG_MATH_SSE) || defined(RG_MATH_NEON)
+#define RG_MATH_SIMD 1
+#endif
+#if defined(RG_MATH_SSE2) || defined(RG_MATH_NEON)
+#define RG_MATH_SIMD_I32 1
+#endif
+#if defined(RG_MATH_SSE41) || defined(RG_MATH_NEON)
+#define RG_MATH_SIMD_ROUND 1
+#endif
+
+#ifdef RG_MATH_NEON
+#include "rg_math_neon.h"
 #endif
 
 // Suppress MSVC warning for anonymous structs in unions
@@ -215,7 +244,7 @@ typedef RG_ALIGN16 union rg_vec3
 typedef RG_ALIGN16 union rg_vec3
 {
 	f32 data[4]; // 4th element is padding for SIMD
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 simd;
 #endif
 	struct
@@ -239,7 +268,7 @@ typedef RG_ALIGN16 union rg_vec4
 typedef RG_ALIGN16 union rg_vec4
 {
 	f32 data[4];
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 simd;
 #endif
 	struct
@@ -263,7 +292,7 @@ typedef union rg_vec2i
 typedef RG_ALIGN16 union rg_vec3i
 {
 	i32 data[4]; // 4th element is padding
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128i simd;
 #endif
 	struct
@@ -276,7 +305,7 @@ typedef RG_ALIGN16 union rg_vec3i
 typedef RG_ALIGN16 union rg_vec4i
 {
 	i32 data[4];
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128i simd;
 #endif
 	struct
@@ -343,7 +372,7 @@ typedef struct rg_mat4x3
 typedef RG_ALIGN16 union rg_quat
 {
 	f32 data[4];
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 	__m128 simd;
 #endif
 	struct
@@ -352,7 +381,7 @@ typedef RG_ALIGN16 union rg_quat
 	};
 } rg_quat;
 
-#ifdef RG_MATH_SSE
+#ifdef RG_MATH_SIMD
 #ifdef RG_MATH_VEC3_PLAIN
 #define RG_VEC3_LOAD(v) _mm_load_ps((v)->data)
 #define RG_VEC3_STORE(v, m) _mm_store_ps((v)->data, (m))
