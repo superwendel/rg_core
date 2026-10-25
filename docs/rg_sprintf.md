@@ -48,6 +48,7 @@ Define configuration macros before inclusion when needed:
 #define RG_SPRINTF_NO_SIMD  // Disable SIMD hexadecimal encoding (SSSE3 or NEON)
 #define RG_SPRINTF_NO_ASM   // Force the hybrid header to select portable C
 #define RG_SPRINTF_SECURE   // Enable argument checks and parser limits
+#define RG_SPRINTF_ROUND_TIES_AWAY 1 // Round exact float ties away from zero (MSVC CRT style)
 #define RG_SPRINTF_ASSERT(x) custom_assert(x)
 ```
 
@@ -99,8 +100,39 @@ returning.
 
 The numeric-to-string functions return a pointer to the terminating null byte.
 
-Pass an explicit precision from 0 through 17 to `rg_ftoa` and `rg_dtoa`. The
-zero-value conversion path currently bypasses precision clamping.
+`rg_dtoa(value, buf, precision)` writes `value` in `%f` style with `precision`
+decimal places; a negative precision selects six. `rg_ftoa` converts the float
+to double and does the same. The output is correctly rounded (see
+[Floating-point output](#floating-point-output)), so `rg_dtoa(x, buf, p)`
+produces exactly the text of `printf("%.*f", p, x)`. The buffer must hold
+`RG_SPRINTF_FLOAT_BUFFER_SIZE` bytes to cover every double, or `24 + precision`
+bytes when `|value| < 1e18`. Precision above `RG_SPRINTF_FLOAT_MAX_PRECISION`
+(350) is clamped.
+
+## Floating-point output
+
+`%f`, `%e`, `%g`, `rg_dtoa`, `rg_ftoa`, and `rg_builder_append_float` derive
+every digit from the exact binary value of the double with integer arithmetic.
+Values a game prints use 128-bit multiplies; exponents beyond that range fall
+back to a small bignum, so there is no precision cliff and no notation switch:
+`%f` of `1e22` prints all 23 integer digits like libc does.
+
+Rounding is round-half-to-even on the exact value, the IEEE 754 default that
+glibc, musl, macOS, and the BSDs use, so `%.2f` of `0.125` is `0.12`,
+`%.0f` of `2.5` is `2`, and `%.0f` of `0.49999997` is `0`. The output matches
+those libcs bit for bit for `%f`, `%e`, `%g` and their uppercase forms at
+every precision up to 350, including the `+`, space, `#`, `0`, and `-` flags
+and widths, with one exception: for `%#g` glibc drops the trailing zeros when
+rounding carries into a new exponent (`%#.3G` of `999.866` prints `1.E+03`),
+where rg_sprintf keeps them as C11 specifies (`1.00E+03`), as musl does.
+Microsoft's CRT rounds exact ties away from zero (`%.0f` of `2.5` is `3`);
+define `RG_SPRINTF_ROUND_TIES_AWAY` as `1` before the include to match it.
+Either way the output is identical on every platform and compiler.
+
+`%g` chooses between the `%e` and `%f` styles from the exponent after rounding
+to the requested significant digits, so `%.1g` of `9.5` is `1e+01`. Infinity
+and NaN print as `inf` and `nan`, uppercase for `%E`, `%F` and `%G`, and are
+never zero padded.
 
 ## String builder
 
@@ -108,10 +140,9 @@ zero-value conversion path currently bypasses precision clamping.
 integers, floats, hexadecimal data, and formatted text. Appends truncate to the
 provided capacity while preserving null termination when capacity is nonzero.
 
-Use a positive-capacity buffer for `rg_builder_appendf`; a zero-capacity formatted
-append currently underflows the stored length. Pass precision from 0 through 17
-to `rg_builder_append_float` to avoid overflowing its temporary buffer when
-formatting zero.
+A builder with zero capacity, or one with only the terminator's byte left,
+ignores appends and keeps its length. `rg_builder_append_float` accepts any
+precision and truncates long results to the capacity.
 
 ## Performance
 
@@ -171,7 +202,8 @@ Measured with `./build.sh bench_sprintf` on an Intel Core i3-1005G1 laptop
 (Ubuntu 24.04, GCC 13.3, `-O2 -DNDEBUG`; the assembly backend is the GNU
 assembler build of the same x64 helper). Nanoseconds per call, median of seven
 samples and three process runs on one pinned core. `stb_sprintf` was not
-present on this machine.
+present on this machine. The float, `rg_dtoa`, builder, and status-line rows
+were re-measured after the exact floating-point conversion landed.
 
 | Case | Portable C | x64 assembly | | Case | Portable C | x64 assembly |
 | --- | ---: | ---: | --- | --- | ---: | ---: |
@@ -179,18 +211,23 @@ present on this machine.
 | `%08u` | 38.6 | 16.4 | | `%-20s` | 13.9 | 18.1 |
 | `%x` | 16.3 | 11.1 | | `%.*s` slice | 17.1 | 19.7 |
 | `%lld` | 39.7 | 17.1 | | bounded `%s` | 30.9 | 25.2 |
-| `%.6f` | 40.5 | 16.5 | | mixed status line | 148 | 80 |
-| `%.6e` | 43.0 | 23.9 | | 32-byte literal | 19.8 | 14.2 |
-| `%g` | 55.0 | 34.1 | | 4,096-byte literal | 105 | 126 |
+| `%.6f` | 26.2 | 19.8 | | mixed status line | 125 | 90 |
+| `%.6e` | 32.2 | 28.5 | | 32-byte literal | 19.8 | 14.2 |
+| `%g` | 41.1 | 35.9 | | 4,096-byte literal | 105 | 126 |
 | `rg_u64toa`, 20 digits | 9.8 | 7.2 | | `%.*s` over 4,096 bytes | 46 | 48 |
-| `rg_dtoa` | 13.5 | 7.2 | | `rg_strlen`, 128 bytes | 5.2 | 3.8 |
-| builder `appendf` | 72.9 | 45.2 | | `rg_strlen`, 4,096 bytes | 38 | 53 |
+| `rg_dtoa` | 8.8 | 8.8 | | `rg_strlen`, 128 bytes | 5.2 | 3.8 |
+| builder `appendf` | 72.9 | 47.9 | | `rg_strlen`, 4,096 bytes | 38 | 53 |
 
-Literal text, bounded string scans, and `rg_strlen` now cost about the same in
+Literal text, bounded string scans, and `rg_strlen` cost about the same in
 both backends because the portable header copies literal runs in bulk and uses
-`memchr`/`strlen`; the assembly backend's advantage is concentrated in numeric
-conversion. `%e` of a value near 1e300 costs about the same as `%e` of 1.5 in
-both backends.
+`memchr`/`strlen`; the assembly backend's advantage is concentrated in integer
+conversion. The exact floating-point conversion made the portable backend's
+`%.6f`, `%.6e`, `%g` and `rg_dtoa` 28 to 37 percent faster than the previous
+double-arithmetic code at these inputs. Under GCC the assembly backend's `%.6f`
+and `%.6e` cost about 3 ns more than that older code did, since it had used an
+inexact fast path for values below 1e18; under Clang the exact code is faster
+than it on every case. `%e` of `1e300` or `5e-324` costs about the same as
+`%e` of `1.5`.
 
 Enforcing string-precision bounds can affect code generation and placement
 elsewhere in the formatter. Measure representative formats, string lengths,
@@ -206,11 +243,12 @@ formats, mixed messages, and bounded output separately when choosing a backend.
 
 In both headers, literal text between conversions is located with `strchr`
 and copied with one bulk write, so long literal runs cost about the same as a
-`memcpy`. `%e` and `%g` derive the decimal exponent from the binary exponent
-with a table-driven scale and a single correction step, so their cost does not
-grow with the magnitude of the exponent; a mantissa that rounds up to 10 at the
-requested precision is renormalized into the exponent, and both backends share
-this normalization so they produce the same digits. String precision (`%.*s`)
-is bounded with `memchr`, and the portable string length helper checks eight
-bytes inline before deferring to the platform `strlen` (the ASM backend uses
-its assembly helper).
+`memcpy`. Floating-point digits come from the exact value: for `%f` the
+fraction bits are multiplied by `5^precision` in 128 bits and shifted, with the
+discarded bits deciding the rounding; for `%e` and `%g` the decimal exponent is
+estimated from the binary exponent and any surplus leading digits are divided
+away exactly, so cost does not grow with the magnitude of the exponent. Both
+backends share this code, so they produce identical digits. String precision
+(`%.*s`) is bounded with `memchr`, and the portable string length helper checks
+eight bytes inline before deferring to the platform `strlen` (the ASM backend
+uses its assembly helper).

@@ -758,6 +758,129 @@ static void test_u64_conversion_boundaries(void)
 	}
 }
 
+static void test_float_exactness(void)
+{
+	// Every float conversion derives its digits from the exact binary value and
+	// rounds half to even, so these expectations hold on every platform.
+	char buf[RG_SPRINTF_FLOAT_BUFFER_SIZE + 16];
+	char* end;
+
+	// Exact ties round to even; values just below a tie round down.
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.2f", 0.125) == 4 && strcmp(buf, "0.12") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.2f", 0.375) == 4 && strcmp(buf, "0.38") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.0f", 0.5) == 1 && strcmp(buf, "0") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.0f", 1.5) == 1 && strcmp(buf, "2") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.0f", 2.5) == 1 && strcmp(buf, "2") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.0f", -2.5) == 2 && strcmp(buf, "-2") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.0f", 0.49999997) == 1 && strcmp(buf, "0") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.1f", 0.25) == 3 && strcmp(buf, "0.2") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.2f", 1.005) == 4 && strcmp(buf, "1.00") == 0); // 1.005 is below the tie
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.0e", 2.5) == 5 && strcmp(buf, "2e+00") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.0e", 3.5) == 5 && strcmp(buf, "4e+00") == 0);
+
+	// Digits beyond double precision are the exact binary expansion.
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.20f", 0.1) == 22 && strcmp(buf, "0.10000000000000000555") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.17f", 479.541) == 21 && strcmp(buf, "479.54099999999999682") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.16e", 844.555) == 22 && strcmp(buf, "8.4455499999999995e+02") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.16g", 844.555) == 17 && strcmp(buf, "844.5549999999999") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.25e", 1.0) == 31 && strcmp(buf, "1.0000000000000000000000000e+00") == 0);
+
+	// Large and small magnitudes print every digit like libc instead of
+	// switching notation.
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.3f", 1e22) == 27 && strcmp(buf, "10000000000000000000000.000") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.0f", 1e23) == 23 && strcmp(buf, "99999999999999991611392") == 0);
+	end = rg_dtoa(1.7976931348623157e308, buf, 2);
+	CHECK(end - buf == 309 + 3 && buf[0] == '1' && buf[1] == '7' && strcmp(end - 4, "8.00") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.3e", 5e-324) == 10 && strcmp(buf, "4.941e-324") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.6e", 2.2250738585072014e-308) == 13 && strcmp(buf, "2.225074e-308") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.2f", 1e-300) == 4 && strcmp(buf, "0.00") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%g", 1e300) == 6 && strcmp(buf, "1e+300") == 0);
+
+	// %g picks the style from the exponent after rounding (C11 7.21.6.1).
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.1g", 9.5) == 5 && strcmp(buf, "1e+01") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.1g", 8.5) == 1 && strcmp(buf, "8") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%.3g", 999.5) == 5 && strcmp(buf, "1e+03") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%g", 0.0001) == 6 && strcmp(buf, "0.0001") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%g", 0.00001) == 5 && strcmp(buf, "1e-05") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%g", 123456.0) == 6 && strcmp(buf, "123456") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%g", 1234567.0) == 11 && strcmp(buf, "1.23457e+06") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%G", 1e-10) == 5 && strcmp(buf, "1E-10") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%g", 0.0) == 1 && strcmp(buf, "0") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%g", -0.0) == 2 && strcmp(buf, "-0") == 0);
+
+	// The # flag keeps the point and, for %g, the trailing zeros.
+	CHECK(rg_snprintf(buf, sizeof(buf), "%#.0f", 3.0) == 2 && strcmp(buf, "3.") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%#.0e", 3.0) == 6 && strcmp(buf, "3.e+00") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%#g", 1.0) == 7 && strcmp(buf, "1.00000") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%#.3g", 363.0) == 4 && strcmp(buf, "363.") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%#.1g", 20.0) == 6 && strcmp(buf, "2.e+01") == 0);
+
+	// Infinity and NaN follow the conversion's case and ignore zero padding.
+	CHECK(rg_snprintf(buf, sizeof(buf), "%E", INFINITY) == 3 && strcmp(buf, "INF") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%08.2f", -INFINITY) == 8 && strcmp(buf, "    -inf") == 0);
+	CHECK(rg_snprintf(buf, sizeof(buf), "%G", NAN) == 3 && strcmp(buf, "NAN") == 0);
+
+	// Negative precision selects six places; precision clamps at the maximum.
+	end = rg_dtoa(1.5, buf, -1);
+	CHECK(strcmp(buf, "1.500000") == 0 && *end == '\0');
+	end = rg_dtoa(0.0, buf, 1000);
+	CHECK(end - buf == 2 + RG_SPRINTF_FLOAT_MAX_PRECISION && buf[1] == '.' && end[-1] == '0' && *end == '\0');
+	end = rg_dtoa(-0.0, buf, 0);
+	CHECK(strcmp(buf, "-0") == 0);
+	end = rg_ftoa(2.5f, buf, 0);
+	CHECK(strcmp(buf, "2") == 0);
+	end = rg_ftoa(0.1f, buf, 10);
+	CHECK(strcmp(buf, "0.1000000015") == 0);
+
+	// Direct conversions match the %f path for the same precision.
+	{
+		static const double values[] = {0.0, 1.0, 0.5, 2.5, 123.456, -0.001, 1e15, 1e17, 9.999999, 0.000001, 5e-324};
+		for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+		{
+			for (int precision = 0; precision <= 20; precision++)
+			{
+				char expected[RG_SPRINTF_FLOAT_BUFFER_SIZE + 16];
+				rg_snprintf(expected, sizeof(expected), "%.*f", precision, values[i]);
+				end = rg_dtoa(values[i], buf, precision);
+				CHECK(strcmp(buf, expected) == 0 && *end == '\0' && (size_t)(end - buf) == strlen(expected));
+			}
+		}
+	}
+}
+
+static void test_builder_limits(void)
+{
+	RgBuilder builder;
+	char one[1];
+	char tiny[4];
+	char room[16];
+
+	// No capacity: nothing is written and the length never underflows.
+	rg_builder_init(&builder, one, 0);
+	rg_builder_appendf(&builder, "value=%d", 42);
+	rg_builder_append_float(&builder, 1.5, 2);
+	CHECK(builder.len == 0);
+	CHECK(rg_builder_finish(&builder) == 0);
+
+	// Only the terminator fits.
+	one[0] = 'x';
+	rg_builder_init(&builder, one, sizeof(one));
+	rg_builder_appendf(&builder, "%d", 7);
+	CHECK(builder.len == 0 && one[0] == '\0');
+
+	// Truncated formatted append keeps the terminator and reports the stored length.
+	rg_builder_init(&builder, tiny, sizeof(tiny));
+	rg_builder_appendf(&builder, "%d", 123456);
+	CHECK(builder.len == 3 && strcmp(tiny, "123") == 0);
+	rg_builder_appendf(&builder, "%d", 9);
+	CHECK(builder.len == 3 && strcmp(tiny, "123") == 0);
+
+	// A long float is truncated to the capacity instead of overflowing.
+	rg_builder_init(&builder, room, sizeof(room));
+	rg_builder_append_float(&builder, 1e300, RG_SPRINTF_FLOAT_MAX_PRECISION);
+	CHECK(builder.len == sizeof(room) - 1 && room[sizeof(room) - 1] == '\0' && room[0] == '1');
+}
+
 static void test_hex_conversion(void)
 {
 	static const uint8_t input[] = {0x00, 0x12, 0xAB, 0xFF};
@@ -886,6 +1009,8 @@ int main(void)
 	test_direct_conversions();
 	test_u64_conversion_boundaries();
 	test_hex_conversion();
+	test_float_exactness();
+	test_builder_limits();
 	test_callback_output();
 	test_builder();
 	test_former_benchmark_templates();
