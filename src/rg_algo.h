@@ -108,8 +108,8 @@
 #define RG_ALGO_SPARSE_SCAN 16u
 
 // Radix digit widths, 4 through 12. Each sort keeps two histogram arrays of
-// 2^bits size_t counters on the stack (4 KiB per array at 8 bits, 16 KiB at
-// 11, 32 KiB at 12). Eight-bit digits suit 32-bit keys (four passes, counters
+// 2^bits size_t counters on the stack (2 KiB per array at 8 bits, 16 KiB at
+// 11, 32 KiB at 12, on 64-bit targets). Eight-bit digits suit 32-bit keys (four passes, counters
 // stay in L1); 64-bit keys take six passes at 11 bits instead of eight.
 #ifndef RG_ALGO_RADIX_BITS
 #define RG_ALGO_RADIX_BITS 8
@@ -1028,7 +1028,9 @@
 // descending (reverse in place; no equal keys, so stability holds). Each
 // scatter pass of a varying digit then histograms the next varying digit from
 // the keys it is already reading, so an n-element sort with d varying digits
-// touches the data d + 1 times instead of 2d.
+// touches the data d + 1 times instead of 2d (one more scan when the lowest
+// digit is constant and its histogram is rebuilt for the first varying digit,
+// plus the copy back after an odd number of scatter passes).
 #define RG_ALGO_RADIX_BODY(type, name, fn_name, key_t, digit_bits, key_bits) \
 	RGINLINE void fn_name(type* data, size_t count, type* scratch, size_t scratch_count) \
 	{ \
@@ -1220,19 +1222,19 @@
 	{ \
 		return (u64)(key_fn(value)); \
 	} \
-	RG_ALGO_RADIX_BODY(type, name, rg_algo_radix_sort_narrow_##name, u64, RG_ALGO_RADIX_BITS, 64) \
-	RG_ALGO_RADIX_BODY(type, name, rg_algo_radix_sort_wide_##name, u64, RG_ALGO_RADIX_BITS_U64, 64) \
+	RG_ALGO_RADIX_BODY(type, name, rg_algo_radix_narrow_##name, u64, RG_ALGO_RADIX_BITS, 64) \
+	RG_ALGO_RADIX_BODY(type, name, rg_algo_radix_wide_##name, u64, RG_ALGO_RADIX_BITS_U64, 64) \
 	RGINLINE void rg_algo_radix_sort_##name(type* data, size_t count, type* scratch, size_t scratch_count) \
 	{ \
 		/* Wide digits need fewer passes but each pass pays for every bucket; */ \
 		/* small inputs take the narrow-digit sort instead. */ \
 		if (count < (size_t)RG_ALGO_RADIX_WIDE_MIN) \
 		{ \
-			rg_algo_radix_sort_narrow_##name(data, count, scratch, scratch_count); \
+			rg_algo_radix_narrow_##name(data, count, scratch, scratch_count); \
 		} \
 		else \
 		{ \
-			rg_algo_radix_sort_wide_##name(data, count, scratch, scratch_count); \
+			rg_algo_radix_wide_##name(data, count, scratch, scratch_count); \
 		} \
 	}
 

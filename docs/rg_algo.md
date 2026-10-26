@@ -133,8 +133,11 @@ they are) or strictly descending (reversed in place; with no equal keys that is
 still stable). Digits that never vary are skipped, so keys confined to a small
 range or to a few bits cost one or two passes rather than four. Each scatter
 pass histograms the next varying digit from the keys it is already reading, so
-a sort with `d` varying digits touches the data `d + 1` times instead of
-`2d`. Inputs of `RG_ALGO_RADIX_INSERTION_CUTOFF` elements or fewer are
+a sort with `d` varying digits reads the keys `d + 1` times instead of `2d`;
+when the lowest digit is constant its histogram is rebuilt for the first digit
+that varies, which adds one key scan, and an odd number of scatter passes ends
+with a copy from the scratch buffer back into the input. Inputs of
+`RG_ALGO_RADIX_INSERTION_CUTOFF` elements or fewer are
 insertion sorted by key, which beats the histogram setup at that size.
 32-bit keys use 8-bit digits (four passes at most). 64-bit keys use 11-bit
 digits (six passes at most) from `RG_ALGO_RADIX_WIDE_MIN` elements upward and
@@ -191,8 +194,9 @@ Define options before including the header:
 `RG_ALGO_INSERTION_CUTOFF` and `RG_ALGO_RADIX_INSERTION_CUTOFF` must be at
 least 2. `RG_ALGO_RADIX_BITS` and `RG_ALGO_RADIX_BITS_U64` may range from 4
 through 12. More bits reduce the number of passes but enlarge the two
-stack-allocated histogram tables, each `2^bits * sizeof(size_t)` bytes: 4 KiB
-per table at the 8-bit default, 16 KiB at 11, 32 KiB at 12. If the quicksort
+stack-allocated histogram tables, each `2^bits * sizeof(size_t)` bytes: 2 KiB
+per table at the 8-bit default, 16 KiB at 11, 32 KiB at 12 on 64-bit targets.
+If the quicksort
 range stack reaches `RG_ALGO_STACK_CAP`, the range that would have been pushed
 safely falls back to heap sort. `RG_ALGO_BLOCK` may range from 1 through 255
 and sets how many elements each partition block scans before swapping; it also
