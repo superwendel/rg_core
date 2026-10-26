@@ -121,7 +121,7 @@ typedef struct rg_frustum
  * The six planes are padded to eight lanes; the padding lanes never reject.
  * Build with rg_frustum_soa_from_frustum. 32-byte aligned for AVX loads.
  */
-typedef RG_ALIGN32 struct rg_frustum_soa
+typedef struct RG_ALIGN32 rg_frustum_soa
 {
 	f32 nx[RG_FRUSTUM_SOA_LANES];
 	f32 ny[RG_FRUSTUM_SOA_LANES];

@@ -48,7 +48,8 @@
 #if RG_COMPILER_MSVC
 #include <intrin.h>
 #endif
-#elif !defined(RG_STRING_NO_SIMD) && defined(__ARM_NEON) && (defined(__GNUC__) || defined(__clang__))
+// AArch64 only: the UTF-8 loop's across-vector add (vaddvq_u8) does not exist on 32-bit ARM.
+#elif !defined(RG_STRING_NO_SIMD) && defined(__ARM_NEON) && defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
 #define RG_STRING_USE_AVX2 0
 #define RG_STRING_USE_NEON 1
 #include <arm_neon.h>
