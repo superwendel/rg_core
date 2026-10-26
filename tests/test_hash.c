@@ -337,8 +337,9 @@ static void test_collision_probe_and_exhausted_update(void)
 	// the first probes past occupied slots; fill the table to its load limit.
 	const size_t limit = rg_hash_growth_for(map.cap);
 	static uint32_t keys[4096]; // the load limit is below the capacity
-	CHECK(limit + 1 <= RG_ARRAY_COUNT(keys));
-	if (limit < 4 || limit + 1 > RG_ARRAY_COUNT(keys)) return; // the update step below needs keys[3]
+	// The update step below needs keys[3]; very large minimum capacities exceed
+	// the key array and skip this scenario.
+	if (limit < 4 || limit + 1 > RG_ARRAY_COUNT(keys)) return;
 	for (size_t i = 0; i <= limit; ++i) keys[i] = 6u + (uint32_t)(i * map.cap);
 	for (size_t i = 0; i < limit; ++i)
 	{
@@ -673,13 +674,15 @@ static void test_single_hash_per_operation(void)
 
 static void test_allocation_failure(void)
 {
-	// Room for the smallest table and little more, whatever RG_HASH_MIN_CAP is.
-	RgArena tiny = rg_arena_create(KB(1) + rg_hash_capacity_for(1) * 64u);
+	// Room for the smallest table and little more, whatever RG_HASH_MIN_CAP is;
+	// a reservation 64 times that size cannot fit.
+	const size_t smallest = rg_hash_capacity_for(1);
+	RgArena tiny = rg_arena_create(KB(1) + smallest * 64u);
 	CHECK(tiny.memory != NULL);
 
 	U32Map map;
 	rg_hash_map_init(U32Map, &map, &tiny);
-	CHECK(!rg_hash_map_reserve(U32Map, &map, 1000));
+	CHECK(!rg_hash_map_reserve(U32Map, &map, smallest * 64u));
 	CHECK(map.entries == NULL);
 	CHECK(map.count == 0);
 	CHECK(map.cap == 0);
