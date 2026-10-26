@@ -200,6 +200,8 @@ RGINLINE int rg_hash_eq_str(const char* a, const char* b);
 #define RG_HASH_CTRL_EMPTY 0x80u
 #define RG_HASH_CTRL_DELETED 0xFEu
 
+RGINLINE uint64_t rg_hash_bswap64(uint64_t value);
+
 #if !defined(RG_HASH_NO_SIMD) && \
     (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
 #include <emmintrin.h>
@@ -442,16 +444,13 @@ RGINLINE int rg_hash_ctrl_remove(uint8_t* ctrl, size_t cap, size_t index)
 #define RG_HASH_REBUILD_BODY(table, EntryType, new_cap) \
 	EntryType* _rg_old_entries = (table)->entries; \
 	size_t _rg_old_cap = (table)->cap; \
+	size_t _rg_arena_used = (table)->arena->used; \
 	uint8_t* _rg_ctrl = (uint8_t*)rg_arena_alloc_aligned((table)->arena, (new_cap) + RG_HASH_GROUP_WIDTH, 16); \
-	if (_rg_ctrl == NULL) \
-	{ \
-		RG_HASH_ASSERT(0 && "rg_hash: arena exhausted"); \
-		return 0; \
-	} \
-	EntryType* _rg_entries = (EntryType*)rg_arena_alloc_array((table)->arena, sizeof(EntryType), (new_cap), RG_ALIGNOF(EntryType)); \
+	EntryType* _rg_entries = _rg_ctrl == NULL ? NULL : (EntryType*)rg_arena_alloc_array((table)->arena, sizeof(EntryType), (new_cap), RG_ALIGNOF(EntryType)); \
 	if (_rg_entries == NULL) \
 	{ \
-		RG_HASH_ASSERT(0 && "rg_hash: arena exhausted"); \
+		/* Give back the control bytes when the entries did not fit. */ \
+		(table)->arena->used = _rg_arena_used; \
 		return 0; \
 	} \
 	rg_hash_ctrl_reset(_rg_ctrl, (new_cap)); \
@@ -475,23 +474,30 @@ RGINLINE int rg_hash_ctrl_remove(uint8_t* ctrl, size_t cap, size_t index)
 	(table)->growth_left -= (table)->count; \
 	return 1;
 
-// Makes room for one more new key: grows when the live entries would exceed
-// half the load limit of the current size, otherwise rebuilds at the same size
-// to drop tombstones.
+// Makes room for one more new key. A table whose live entries fit within half
+// the load limit of its size is only clogged with tombstones and is rebuilt at
+// the same size; otherwise the table grows to the smallest capacity whose load
+// limit admits count + 1 entries, at least doubling. Returns 0 when no such
+// capacity exists or the arena cannot provide it.
 #define RG_HASH_MAKE_ROOM_BODY(table, rebuild_fn) \
-	if ((table)->cap == 0) \
+	size_t _rg_needed = rg_hash_capacity_for((table)->count + 1); \
+	if (_rg_needed == 0) \
 	{ \
-		return rebuild_fn((table), (size_t)RG_HASH_MIN_CAP); \
+		return 0; \
 	} \
-	if ((table)->count + 1 > rg_hash_growth_for((table)->cap) / 2) \
+	if ((table)->cap != 0 && (table)->count + 1 <= rg_hash_growth_for((table)->cap) / 2) \
+	{ \
+		return rebuild_fn((table), (table)->cap); \
+	} \
+	if ((table)->cap != 0 && _rg_needed <= (table)->cap) \
 	{ \
 		if ((table)->cap > SIZE_MAX / 2) \
 		{ \
 			return 0; \
 		} \
-		return rebuild_fn((table), (table)->cap * 2); \
+		_rg_needed = (table)->cap * 2; \
 	} \
-	return rebuild_fn((table), (table)->cap);
+	return rebuild_fn((table), _rg_needed);
 
 /**
  * @brief Define a typed hash map
@@ -626,6 +632,7 @@ RGINLINE int rg_hash_ctrl_remove(uint8_t* ctrl, size_t cap, size_t index)
 		{ \
 			return -1; \
 		} \
+		RG_HASH_ASSERT(map->growth_left > 0); \
 		idx = rg_hash_find_free_slot(map->ctrl, map->cap, hash); \
 		map->growth_left -= map->ctrl[idx] == RG_HASH_CTRL_EMPTY; \
 		rg_hash_ctrl_set(map->ctrl, map->cap, idx, rg_hash_tag(hash)); \
@@ -763,6 +770,7 @@ RGINLINE int rg_hash_ctrl_remove(uint8_t* ctrl, size_t cap, size_t index)
 		{ \
 			return -1; \
 		} \
+		RG_HASH_ASSERT(set->growth_left > 0); \
 		idx = rg_hash_find_free_slot(set->ctrl, set->cap, hash); \
 		set->growth_left -= set->ctrl[idx] == RG_HASH_CTRL_EMPTY; \
 		rg_hash_ctrl_set(set->ctrl, set->cap, idx, rg_hash_tag(hash)); \

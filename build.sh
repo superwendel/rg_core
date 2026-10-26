@@ -201,6 +201,9 @@ test_module() {
         hash)
             test_case test_hash test_hash.c
             test_case test_hash_eager test_hash.c -DRG_MALLOC_LAZY_COMMIT=0
+            test_case test_hash_portable test_hash.c -DRG_HASH_NO_SIMD
+            test_case test_hash_min_cap test_hash.c -DRG_HASH_MIN_CAP=128
+            test_case test_hash_low_load test_hash.c -DRG_HASH_MAX_LOAD_NUM=1 -DRG_HASH_MAX_LOAD_DEN=4
             ;;
         random)
             test_case test_random test_random.c
@@ -283,6 +286,9 @@ test_sanitized() {
     test_case test_time_os_clock test_time.c -DRG_TIME_USE_TSC=0
     test_case test_mem_prefault test_mem.c -DRG_MALLOC_PREFAULT=1
     test_case test_containers_u32_index test_containers.c -DRG_SPARSE_INDEX_TYPE=uint32_t
+    # Both hash probing backends and a low load factor.
+    test_case test_hash_portable test_hash.c -DRG_HASH_NO_SIMD
+    test_case test_hash_low_load test_hash.c -DRG_HASH_MAX_LOAD_NUM=1 -DRG_HASH_MAX_LOAD_DEN=4
     # Extreme but supported sort configuration: single-element blocks, the
     # smallest insertion cutoff, and a one-entry range stack.
     test_case test_algo_extreme test_algo.c -DRG_ALGO_BLOCK=1 -DRG_ALGO_INSERTION_CUTOFF=2 -DRG_ALGO_NINTHER_CUTOFF=8 -DRG_ALGO_STACK_CAP=1

@@ -171,8 +171,10 @@ one memory access on a hit.
 Removing a key marks its slot empty when no lookup can have probed past it,
 and otherwise leaves a deleted marker (a tombstone) so later lookups keep
 probing. Inserting into a table whose free slots are exhausted by tombstones
-rebuilds it at the same size; inserting into one that is genuinely full doubles
-it. Both allocate replacement arrays from the arena.
+rebuilds it at the same size; inserting into one that is genuinely full grows
+it to the smallest capacity whose load limit admits the new entry, at least
+doubling. Both allocate replacement arrays from the arena, and a failed
+allocation leaves the table and the arena position unchanged.
 
 Iterate a table through its entries: `map.entries[i].hash` is nonzero exactly
 for the occupied slots in `[0, map.cap)`, and that holds across removals. The

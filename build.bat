@@ -445,6 +445,24 @@ if errorlevel 1 exit /b 1
 test_hash_eager.exe
 if errorlevel 1 exit /b 1
 
+echo Building portable-probing rg_hash tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_HASH_NO_SIMD tests\test_hash.c /Fe:test_hash_portable.exe
+if errorlevel 1 exit /b 1
+test_hash_portable.exe
+if errorlevel 1 exit /b 1
+
+echo Building large-minimum-capacity rg_hash tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_HASH_MIN_CAP=128 tests\test_hash.c /Fe:test_hash_min_cap.exe
+if errorlevel 1 exit /b 1
+test_hash_min_cap.exe
+if errorlevel 1 exit /b 1
+
+echo Building low-load rg_hash tests...
+cl %COMMON_FLAGS% /std:c11 /DRG_HASH_MAX_LOAD_NUM=1 /DRG_HASH_MAX_LOAD_DEN=4 tests\test_hash.c /Fe:test_hash_low_load.exe
+if errorlevel 1 exit /b 1
+test_hash_low_load.exe
+if errorlevel 1 exit /b 1
+
 echo All rg_hash tests passed.
 exit /b 0
 
@@ -681,7 +699,7 @@ del /q test_containers.exe test_containers_config.exe test_containers_cpp.exe te
 del /q test_time.exe test_time_custom.exe test_time_cpp.exe test_time_os_clock.exe test_time_tsc_calibrated.exe 2>nul
 del /q test_prof.exe test_prof_disabled.exe test_prof_cpp.exe test_prof_os_clock.exe test_prof_plain_count.exe 2>nul
 del /q test_bin.exe test_bin_unaligned.exe test_bin_bytewise.exe test_bin_cpp.exe 2>nul
-del /q test_hash.exe test_hash_eager.exe test_hash_cpp.exe 2>nul
+del /q test_hash.exe test_hash_eager.exe test_hash_cpp.exe test_hash_portable.exe test_hash_min_cap.exe test_hash_low_load.exe 2>nul
 del /q test_random.exe test_random_portable.exe test_random_cpp.exe 2>nul
 del /q test_algo.exe test_algo_config.exe test_algo_cpp.exe 2>nul
 del /q test_string.exe test_string_avx2.exe test_string_scalar.exe test_string_secure.exe test_string_cpp.exe 2>nul

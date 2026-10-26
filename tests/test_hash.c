@@ -115,7 +115,7 @@ static void test_capacity_helpers(void)
 	CHECK((rg_hash_capacity_for(100) & (rg_hash_capacity_for(100) - 1)) == 0);
 	CHECK(rg_hash_capacity_for(SIZE_MAX) == 0);
 	CHECK(rg_hash_should_grow(0, 0));
-	CHECK(!rg_hash_should_grow(0, RG_HASH_MIN_CAP));
+	CHECK(!rg_hash_should_grow(0, rg_hash_capacity_for(1)));
 	CHECK(rg_hash_should_grow(SIZE_MAX, SIZE_MAX));
 }
 
@@ -330,21 +330,23 @@ static void test_collision_probe_and_exhausted_update(void)
 	rg_hash_set_init(ProbeSet, &set, &arena);
 	CHECK(rg_hash_map_reserve(ProbeMap, &map, 1));
 	CHECK(rg_hash_set_reserve(ProbeSet, &set, 1));
-	CHECK(map.cap == RG_HASH_MIN_CAP && set.cap == RG_HASH_MIN_CAP);
+	const size_t cap0 = rg_hash_capacity_for(1);
+	CHECK(map.cap == cap0 && set.cap == cap0);
 
 	// Identity-hashed keys that all start in the same slot, so every one after
 	// the first probes past occupied slots; fill the table to its load limit.
 	const size_t limit = rg_hash_growth_for(map.cap);
-	uint32_t keys[64];
-	CHECK(limit < RG_ARRAY_COUNT(keys));
+	static uint32_t keys[4096]; // the load limit is below the capacity
+	CHECK(limit + 1 <= RG_ARRAY_COUNT(keys));
+	if (limit < 4 || limit + 1 > RG_ARRAY_COUNT(keys)) return; // the update step below needs keys[3]
 	for (size_t i = 0; i <= limit; ++i) keys[i] = 6u + (uint32_t)(i * map.cap);
 	for (size_t i = 0; i < limit; ++i)
 	{
 		CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[i], keys[i] * 3) == 1);
 		CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[i]) == 1);
 	}
-	CHECK(map.cap == RG_HASH_MIN_CAP && map.count == limit && map.growth_left == 0);
-	CHECK(set.cap == RG_HASH_MIN_CAP && set.count == limit && set.growth_left == 0);
+	CHECK(map.cap == cap0 && map.count == limit && map.growth_left == 0);
+	CHECK(set.cap == cap0 && set.count == limit && set.growth_left == 0);
 
 	// Updating an existing key at the limit allocates nothing even when the arena
 	// is exhausted; inserting a new key fails cleanly and changes nothing.
@@ -355,12 +357,12 @@ static void test_collision_probe_and_exhausted_update(void)
 	ProbeSet_Entry* saved_set_entries = set.entries;
 	CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[3], 999) == 0);
 	CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[3]) == 0);
-	CHECK(arena.used == saved_used && map.cap == RG_HASH_MIN_CAP && set.cap == RG_HASH_MIN_CAP);
+	CHECK(arena.used == saved_used && map.cap == cap0 && set.cap == cap0);
 
 	CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[limit], 114) == -1);
 	CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[limit]) == -1);
-	CHECK(map.entries == saved_map_entries && map.count == limit && map.cap == RG_HASH_MIN_CAP);
-	CHECK(set.entries == saved_set_entries && set.count == limit && set.cap == RG_HASH_MIN_CAP);
+	CHECK(map.entries == saved_map_entries && map.count == limit && map.cap == cap0);
+	CHECK(set.entries == saved_set_entries && set.count == limit && set.cap == cap0);
 	CHECK(arena.used == saved_used);
 	for (size_t i = 0; i < limit; ++i)
 	{
@@ -374,9 +376,9 @@ static void test_collision_probe_and_exhausted_update(void)
 	// Growth must preserve every collided key and the value updated while full.
 	arena.capacity = saved_capacity;
 	CHECK(rg_hash_map_try_put(ProbeMap, &map, keys[limit], 114) == 1);
-	CHECK(map.cap == 2 * RG_HASH_MIN_CAP && map.count == limit + 1);
+	CHECK(map.cap >= 2 * cap0 && map.count == limit + 1);
 	CHECK(rg_hash_set_try_insert(ProbeSet, &set, keys[limit]) == 1);
-	CHECK(set.cap == 2 * RG_HASH_MIN_CAP && set.count == limit + 1);
+	CHECK(set.cap >= 2 * cap0 && set.count == limit + 1);
 	for (size_t i = 0; i <= limit; ++i)
 	{
 		uint32_t* value = rg_hash_map_get_ptr(ProbeMap, &map, keys[i]);
@@ -671,7 +673,8 @@ static void test_single_hash_per_operation(void)
 
 static void test_allocation_failure(void)
 {
-	RgArena tiny = rg_arena_create(KB(1));
+	// Room for the smallest table and little more, whatever RG_HASH_MIN_CAP is.
+	RgArena tiny = rg_arena_create(KB(1) + rg_hash_capacity_for(1) * 64u);
 	CHECK(tiny.memory != NULL);
 
 	U32Map map;
