@@ -41,13 +41,18 @@ values; the 4,096-element rows are in microseconds.
 
 | Workload | rg sort | rg radix | `std::sort` | `qsort` | rg stable | `std::stable_sort` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Random `int32` | 37.9 ms | **9.2 ms** | 72.3 ms | 135.7 ms | 87.2 ms | 88.4 ms |
-| `int32`, 256 distinct values | **11.2 ms** | 15.2 ms | 37.0 ms | 97.6 ms | 52.6 ms | 54.1 ms |
-| `int32`, nearly sorted | **8.1 ms** | 9.3 ms | 12.4 ms | 47.9 ms | 13.8 ms | 14.8 ms |
-| `int32`, sorted / reverse / all equal | **0.40 / 0.82 / 0.42 ms** | 9.2 / 9.3 / 2.2 ms | 10.3 / 7.2 / 7.9 ms | 29.6 / 35.0 / 29.7 ms | 0.41 / 13.3 / 0.41 ms | 9.6 / 14.2 / 9.7 ms |
-| 32-byte records, 16-bit keys | 41.2 ms | **15.3 ms** | 75.0 ms | 201.0 ms | 117.7 ms | 111.2 ms |
-| 32-byte records, 64-bit keys | **49.2 ms** | 61.6 ms | 81.1 ms | 210.1 ms | 121.9 ms | 114.7 ms |
-| Random `int32`, 4,096 | 85.0 µs | **31.0 µs** | 146.7 µs | 293.5 µs | 180.5 µs | 189.0 µs |
+| Random `int32` | 40.7 ms | **8.1 ms** | 74.9 ms | 135.7 ms | 87.2 ms | 88.4 ms |
+| `int32`, 256 distinct values | 11.9 ms | **9.2 ms** | 37.9 ms | 97.6 ms | 52.6 ms | 54.1 ms |
+| `int32`, nearly sorted | **8.2 ms** | 8.4 ms | 12.7 ms | 47.9 ms | 13.8 ms | 14.8 ms |
+| `int32`, sorted / reverse / all equal | **0.43 / 0.88 / 0.43 ms** | 1.8 / 2.3 / 2.5 ms | 10.8 / 7.6 / 8.2 ms | 29.6 / 35.0 / 29.7 ms | 0.41 / 13.3 / 0.41 ms | 9.6 / 14.2 / 9.7 ms |
+| 32-byte records, 16-bit keys | 45.6 ms | **15.7 ms** | 80.1 ms | 201.0 ms | 117.7 ms | 111.2 ms |
+| 32-byte records, 64-bit keys | 53.6 ms | **51.4 ms** | 85.8 ms | 210.1 ms | 121.9 ms | 114.7 ms |
+| Random `int32`, 4,096 | 84.6 µs | **31.2 µs** | 155.1 µs | 293.5 µs | 180.5 µs | 189.0 µs |
+
+The radix column and the `rg sort` / `std::sort` columns were re-measured
+together (medians of three alternating process runs on an idle machine) after
+the radix sort moved to a single histogram pass with a sorted-input early-out;
+the remaining columns are from the earlier session.
 
 | `rg_algo_nth_element` | rg | `std::nth_element` |
 | --- | ---: | ---: |
@@ -59,9 +64,10 @@ values; the 4,096-element rows are in microseconds.
 
 The comparison sort takes about half the time of libstdc++'s `std::sort` on
 random and duplicate-heavy input and keeps its linear fast paths for sorted,
-reversed, and constant input. The 64-bit-key record case is the one where the
-comparison sort beats the eight-bit radix sort, which needs eight passes over
-32-byte records there. Selection is 2x to 3x faster than `std::nth_element`
+reversed, and constant input. The 64-bit-key record case was the one where
+the comparison sort beat the earlier eight-bit radix sort, which needed eight
+passes over 32-byte records; with 11-bit digits and six passes the radix sort
+now leads there too. Selection is 2x to 3x faster than `std::nth_element`
 from 65,536 elements up; at 4,096 elements with heavy duplicates it is slower,
 because the equal-run partition costs more than it saves at that size.
 

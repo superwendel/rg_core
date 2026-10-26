@@ -127,6 +127,20 @@ may be evaluated more than once per value. As with stable comparison sorting,
 radix scratch must contain at least `count` elements and must not overlap the
 input.
 
+The sort reads the keys once to histogram the lowest digit, record which key
+bits vary at all, and detect inputs that are already ascending (returned as
+they are) or strictly descending (reversed in place; with no equal keys that is
+still stable). Digits that never vary are skipped, so keys confined to a small
+range or to a few bits cost one or two passes rather than four. Each scatter
+pass histograms the next varying digit from the keys it is already reading, so
+a sort with `d` varying digits touches the data `d + 1` times instead of
+`2d`. Inputs of `RG_ALGO_RADIX_INSERTION_CUTOFF` elements or fewer are
+insertion sorted by key, which beats the histogram setup at that size.
+32-bit keys use 8-bit digits (four passes at most). 64-bit keys use 11-bit
+digits (six passes at most) from `RG_ALGO_RADIX_WIDE_MIN` elements upward and
+8-bit digits below that, where the per-pass bucket work of wide digits would
+dominate; all three settings are configurable.
+
 ## Choosing a sort
 
 | Requirement | Use |
@@ -136,19 +150,21 @@ input.
 | Stable 32-bit integer-key throughput with caller scratch | `rg_algo_radix_sort_name` |
 | 64-bit integer keys | Measure: `rg_algo_sort_name` or `rg_algo_radix_sort_name` |
 
-Radix sorting leads clearly for 32-bit keys. For full-range 64-bit keys the
-block-partitioned comparison sort finished the one-million 32-byte record
-workload faster than the eight-pass radix sort, so prefer `rg_algo_sort_name`
-there unless the key distribution leaves most radix passes skipped or
-stability is required.
+Radix sorting leads clearly for 32-bit keys, and with 11-bit digits it also
+leads for full-range 64-bit keys from a few thousand elements upward (the
+one-million 32-byte record workload takes 51 ms against 54 ms for the
+block-partitioned comparison sort). Below that the comparison sort is faster
+for 64-bit keys; prefer the radix sort when stability is required or the key
+distribution leaves most digits constant.
 
 ## Performance
 
 On the published one-million-element random `int32` workload, the typed radix
 sort completed in 15.38 ms versus 89.63 ms for `std::sort` and 142.05 ms for
 `qsort` (MSVC, Ryzen 9 4900HS). On a low-end Linux laptop (Intel Core i3-1005G1,
-GCC 13.3) the same workload takes 9.2 ms for the radix sort, 37.9 ms for the
-block-partition comparison sort, and 72.3 ms for libstdc++'s `std::sort`;
+GCC 13.3) the same workload takes 8.1 ms for the radix sort, 40.7 ms for the
+block-partition comparison sort, and 74.9 ms for libstdc++'s `std::sort`;
+already sorted million-element input costs the radix sort 1.8 ms;
 `rg_algo_nth_element` takes 2.7 ms against 5.3 ms for `std::nth_element`. See
 the [core benchmark report](benchmarks/rg_core.md#rg_algo) for record sorting,
 selection, methodology, comparison versions, and limitations.
@@ -165,13 +181,18 @@ Define options before including the header:
 #define RG_ALGO_STACK_CAP 64             // Quicksort range stack capacity
 #define RG_ALGO_BLOCK 64                 // Block partition size
 #define RG_ALGO_NINTHER_CUTOFF 128       // Median-of-medians pivot cutoff
-#define RG_ALGO_RADIX_BITS 8             // Bits processed per radix pass
+#define RG_ALGO_RADIX_BITS 8             // Bits per radix pass, 32-bit keys
+#define RG_ALGO_RADIX_BITS_U64 11        // Bits per radix pass, 64-bit keys of RG_ALGO_RADIX_WIDE_MIN+ elements
+#define RG_ALGO_RADIX_WIDE_MIN 2048      // Smaller 64-bit sorts use RG_ALGO_RADIX_BITS digits
+#define RG_ALGO_RADIX_INSERTION_CUTOFF 32 // Radix inputs this small are insertion sorted
 #include "rg_algo.h"
 ```
 
-`RG_ALGO_INSERTION_CUTOFF` must be at least 2. `RG_ALGO_RADIX_BITS` may range
-from 4 through 16. More bits reduce the number of passes but enlarge the
-stack-allocated bucket table. The default uses 256 buckets. If the quicksort
+`RG_ALGO_INSERTION_CUTOFF` and `RG_ALGO_RADIX_INSERTION_CUTOFF` must be at
+least 2. `RG_ALGO_RADIX_BITS` and `RG_ALGO_RADIX_BITS_U64` may range from 4
+through 12. More bits reduce the number of passes but enlarge the two
+stack-allocated histogram tables, each `2^bits * sizeof(size_t)` bytes: 4 KiB
+per table at the 8-bit default, 16 KiB at 11, 32 KiB at 12. If the quicksort
 range stack reaches `RG_ALGO_STACK_CAP`, the range that would have been pushed
 safely falls back to heap sort. `RG_ALGO_BLOCK` may range from 1 through 255
 and sets how many elements each partition block scans before swapping; it also
@@ -186,7 +207,8 @@ three instead of one.
 - `nth_element`: linear expected time and quadratic worst-case time.
 - Binary search and bounds: `O(log n)` time.
 - Min/max operations: `O(n)` time.
-- Radix sort: proportional to the processed passes, elements, and bucket count.
+- Radix sort: `O(n)` per varying digit plus one key scan, with `count *
+  sizeof(type)` scratch; already sorted input costs the scan alone.
 
 ## Thread safety
 

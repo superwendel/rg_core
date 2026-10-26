@@ -641,6 +641,111 @@ static void test_radix_sort_basic(void)
 	printf("  PASS: radix sort\n");
 }
 
+static int item32_in_order(const Item32* a, const Item32* b)
+{
+	return a->key < b->key || (a->key == b->key && a->id < b->id);
+}
+
+static void test_radix_sort_paths(void)
+{
+	// Every size from 0 through 40 crosses the insertion cutoff; keys repeat so
+	// stability is observable, and the reference is the (key, id) order.
+	enum { MAX_COUNT = 40, BIG = 3000 };
+	static Item32 data[BIG];
+	static Item32 scratch[BIG];
+	static Item64 data64[BIG];
+	static Item64 scratch64[BIG];
+	u32 state = 0x1234abcdu;
+	for (size_t count = 0; count <= MAX_COUNT; count++)
+	{
+		for (size_t i = 0; i < count; i++)
+		{
+			data[i].key = (i32)(rng_next(&state) % 7u) - 3;
+			data[i].id = (i32)i;
+		}
+		rg_algo_radix_sort_Item32Radix(data, count, scratch, count);
+		for (size_t i = 1; i < count; i++)
+		{
+			TEST_ASSERT(item32_in_order(&data[i - 1], &data[i]), "small radix sort is stable and sorted");
+		}
+	}
+
+	// Ascending input with equal keys is returned untouched (stable), and a
+	// strictly descending input is reversed; both for small and large counts.
+	const size_t counts[] = {8, 40, 2000};
+	for (size_t c = 0; c < RG_ARRAY_COUNT(counts); c++)
+	{
+		size_t count = counts[c];
+		for (size_t i = 0; i < count; i++)
+		{
+			data[i].key = (i32)(i / 3) - 100;
+			data[i].id = (i32)i;
+		}
+		rg_algo_radix_sort_Item32Radix(data, count, scratch, count);
+		for (size_t i = 0; i < count; i++)
+		{
+			TEST_ASSERT(data[i].id == (i32)i, "ascending input keeps its order");
+		}
+		for (size_t i = 0; i < count; i++)
+		{
+			data[i].key = (i32)(count - i) * 2 - 50; // strictly descending, negative and positive
+			data[i].id = (i32)i;
+		}
+		rg_algo_radix_sort_Item32Radix(data, count, scratch, count);
+		for (size_t i = 1; i < count; i++)
+		{
+			TEST_ASSERT(data[i - 1].key < data[i].key, "descending input is reversed");
+		}
+	}
+
+	// Keys that differ only in their top digit: the lowest digit never varies,
+	// so the first histogram is rebuilt for the digit that does.
+	for (size_t i = 0; i < BIG; i++)
+	{
+		data[i].key = (i32)((rng_next(&state) & 0x7u) << 28);
+		data[i].id = (i32)i;
+	}
+	rg_algo_radix_sort_Item32Radix(data, BIG, scratch, BIG);
+	for (size_t i = 1; i < BIG; i++)
+	{
+		TEST_ASSERT(item32_in_order(&data[i - 1], &data[i]), "top-digit keys sort stably");
+	}
+
+	// Nearly sorted with duplicates, below and above the cutoff.
+	for (size_t i = 0; i < BIG; i++)
+	{
+		data[i].key = (i32)(i / 2);
+		if ((rng_next(&state) & 15u) == 0u) data[i].key = (i32)(rng_next(&state) % 4000u);
+		data[i].id = (i32)i;
+	}
+	rg_algo_radix_sort_Item32Radix(data, BIG, scratch, BIG);
+	for (size_t i = 1; i < BIG; i++)
+	{
+		TEST_ASSERT(item32_in_order(&data[i - 1], &data[i]), "nearly sorted input sorts stably");
+	}
+
+	// 64-bit keys spanning every digit, and keys confined to the top digit.
+	for (size_t pattern = 0; pattern < 2; pattern++)
+	{
+		for (size_t i = 0; i < BIG; i++)
+		{
+			u64 key = ((u64)rng_next(&state) << 32) | rng_next(&state);
+			data64[i].key = pattern == 0 ? (key & ~(u64)0xFu) : (key & ((u64)0x3Fu << 58));
+			data64[i].id = (u32)i;
+		}
+		rg_algo_radix_sort_Item64Radix(data64, BIG, scratch64, BIG);
+		for (size_t i = 1; i < BIG; i++)
+		{
+			TEST_ASSERT(data64[i - 1].key < data64[i].key ||
+			                (data64[i - 1].key == data64[i].key && data64[i - 1].id < data64[i].id),
+			            "u64 radix sort is stable and sorted");
+		}
+	}
+
+	TEST_PASS();
+	printf("  PASS: radix paths\n");
+}
+
 static void test_radix_sort_stable(void)
 {
 	enum { COUNT = 256 };
@@ -859,6 +964,7 @@ static void run_tests(void)
 	test_radix_sort_basic();
 	test_radix_sort_stable();
 	test_radix_sort_u64();
+	test_radix_sort_paths();
 	test_bounds_and_search();
 	test_minmax();
 	test_is_sorted();

@@ -500,7 +500,7 @@ test_algo.exe
 if errorlevel 1 exit /b 1
 
 echo Building configured rg_algo tests...
-cl %COMMON_FLAGS% /std:c11 /DRG_ALGO_RADIX_BITS=4 /DRG_ALGO_STABLE_RUN=5 /DRG_ALGO_INSERTION_CUTOFF=9 /DRG_ALGO_STACK_CAP=1 /Fo:test_algo_config.obj tests\test_algo.c /Fe:test_algo_config.exe
+cl %COMMON_FLAGS% /std:c11 /DRG_ALGO_RADIX_BITS=4 /DRG_ALGO_RADIX_BITS_U64=5 /DRG_ALGO_RADIX_INSERTION_CUTOFF=2 /DRG_ALGO_RADIX_WIDE_MIN=3 /DRG_ALGO_STABLE_RUN=5 /DRG_ALGO_INSERTION_CUTOFF=9 /DRG_ALGO_STACK_CAP=1 /Fo:test_algo_config.obj tests\test_algo.c /Fe:test_algo_config.exe
 if errorlevel 1 exit /b 1
 test_algo_config.exe
 if errorlevel 1 exit /b 1

@@ -20,7 +20,10 @@
 //   #define RG_ALGO_STACK_CAP            - Quicksort range stack capacity (default: 64)
 //   #define RG_ALGO_BLOCK                - Block partition size (default: 64)
 //   #define RG_ALGO_NINTHER_CUTOFF       - Ninther pivot cutoff (default: 128)
-//   #define RG_ALGO_RADIX_BITS           - Bits per radix pass (default: 8)
+//   #define RG_ALGO_RADIX_BITS           - Bits per radix pass, 32-bit keys (default: 8)
+//   #define RG_ALGO_RADIX_BITS_U64       - Bits per radix pass, 64-bit keys (default: 11)
+//   #define RG_ALGO_RADIX_WIDE_MIN       - 64-bit sorts below this count use RG_ALGO_RADIX_BITS (default: 2048)
+//   #define RG_ALGO_RADIX_INSERTION_CUTOFF - Insertion sort by key up to this count (default: 32)
 //
 // NOTES:
 //   - Comparators must implement strict weak ordering.
@@ -104,28 +107,45 @@
 #define RG_ALGO_BLOCK_CUTOFF 128u
 #define RG_ALGO_SPARSE_SCAN 16u
 
+// Radix digit widths, 4 through 12. Each sort keeps two histogram arrays of
+// 2^bits size_t counters on the stack (4 KiB per array at 8 bits, 16 KiB at
+// 11, 32 KiB at 12). Eight-bit digits suit 32-bit keys (four passes, counters
+// stay in L1); 64-bit keys take six passes at 11 bits instead of eight.
 #ifndef RG_ALGO_RADIX_BITS
 #define RG_ALGO_RADIX_BITS 8
 #endif
 
-#if RG_ALGO_RADIX_BITS < 4 || RG_ALGO_RADIX_BITS > 16
-#error RG_ALGO_RADIX_BITS must be between 4 and 16
+#ifndef RG_ALGO_RADIX_BITS_U64
+#define RG_ALGO_RADIX_BITS_U64 11
 #endif
 
-#ifndef RG_ALGO_RADIX_BUCKETS
-#define RG_ALGO_RADIX_BUCKETS (1u << RG_ALGO_RADIX_BITS)
+#if RG_ALGO_RADIX_BITS < 4 || RG_ALGO_RADIX_BITS > 12
+#error RG_ALGO_RADIX_BITS must be between 4 and 12
 #endif
 
-#ifndef RG_ALGO_RADIX_MASK
-#define RG_ALGO_RADIX_MASK (RG_ALGO_RADIX_BUCKETS - 1u)
+#if RG_ALGO_RADIX_BITS_U64 < 4 || RG_ALGO_RADIX_BITS_U64 > 12
+#error RG_ALGO_RADIX_BITS_U64 must be between 4 and 12
 #endif
 
-#ifndef RG_ALGO_RADIX_PASSES_U32
-#define RG_ALGO_RADIX_PASSES_U32 ((32u + RG_ALGO_RADIX_BITS - 1u) / RG_ALGO_RADIX_BITS)
+// 64-bit key sorts below this count use RG_ALGO_RADIX_BITS digits instead of
+// RG_ALGO_RADIX_BITS_U64: the per-pass bucket work of wide digits only pays
+// off once the passes saved move enough elements.
+#ifndef RG_ALGO_RADIX_WIDE_MIN
+#define RG_ALGO_RADIX_WIDE_MIN 2048
 #endif
 
-#ifndef RG_ALGO_RADIX_PASSES_U64
-#define RG_ALGO_RADIX_PASSES_U64 ((64u + RG_ALGO_RADIX_BITS - 1u) / RG_ALGO_RADIX_BITS)
+#if RG_ALGO_RADIX_WIDE_MIN < 1
+#error RG_ALGO_RADIX_WIDE_MIN must be at least 1
+#endif
+
+// Inputs up to this size are insertion sorted by key instead of radix sorted;
+// the histogram setup costs more than the comparisons there.
+#ifndef RG_ALGO_RADIX_INSERTION_CUTOFF
+#define RG_ALGO_RADIX_INSERTION_CUTOFF 32
+#endif
+
+#if RG_ALGO_RADIX_INSERTION_CUTOFF < 2
+#error RG_ALGO_RADIX_INSERTION_CUTOFF must be at least 2
 #endif
 
 // =============================================================================
@@ -1000,6 +1020,180 @@
 		} \
 	}
 
+// Shared body of the radix sort macros. Least-significant-digit, stable.
+//
+// One pass reads every key to histogram the lowest digit, OR together the key
+// bits that differ from the first key (digits that never vary are skipped),
+// and test whether the input is already ascending (return as is) or strictly
+// descending (reverse in place; no equal keys, so stability holds). Each
+// scatter pass of a varying digit then histograms the next varying digit from
+// the keys it is already reading, so an n-element sort with d varying digits
+// touches the data d + 1 times instead of 2d.
+#define RG_ALGO_RADIX_BODY(type, name, fn_name, key_t, digit_bits, key_bits) \
+	RGINLINE void fn_name(type* data, size_t count, type* scratch, size_t scratch_count) \
+	{ \
+		enum \
+		{ \
+			rg_radix_passes = ((key_bits) + (digit_bits) - 1) / (digit_bits), \
+			rg_radix_buckets = 1 << (digit_bits) \
+		}; \
+		const key_t rg_radix_mask = (key_t)(rg_radix_buckets - 1); \
+		RG_ALGO_ASSERT(data != NULL || count == 0u); \
+		if (count < 2u) \
+		{ \
+			return; \
+		} \
+		RG_ALGO_ASSERT(scratch != NULL); \
+		RG_ALGO_ASSERT(scratch_count >= count); \
+		RG_ALGO_ASSERT(count <= SIZE_MAX / sizeof(type)); \
+		{ \
+			size_t byte_count = count * sizeof(type); \
+			uintptr_t data_address = (uintptr_t)(const void*)data; \
+			uintptr_t scratch_address = (uintptr_t)(const void*)scratch; \
+			RG_ALGO_ASSERT((scratch_address < data_address && data_address - scratch_address >= byte_count) || \
+			               (scratch_address > data_address && scratch_address - data_address >= byte_count)); \
+			(void)byte_count; \
+			(void)data_address; \
+			(void)scratch_address; \
+		} \
+		if (count <= (size_t)RG_ALGO_RADIX_INSERTION_CUTOFF) \
+		{ \
+			int ascending = 1; \
+			int descending = 1; \
+			for (size_t i = 1; i < count; i++) \
+			{ \
+				key_t previous = rg_algo_key_##name(&data[i - 1]); \
+				key_t current = rg_algo_key_##name(&data[i]); \
+				ascending &= (current >= previous); \
+				descending &= (current < previous); \
+			} \
+			if (ascending) \
+			{ \
+				return; \
+			} \
+			if (descending) \
+			{ \
+				for (size_t lo = 0, hi = count - 1; lo < hi; lo++, hi--) \
+				{ \
+					type tmp = data[lo]; \
+					data[lo] = data[hi]; \
+					data[hi] = tmp; \
+				} \
+				return; \
+			} \
+			for (size_t i = 1; i < count; i++) \
+			{ \
+				type item = data[i]; \
+				key_t key = rg_algo_key_##name(&item); \
+				size_t j = i; \
+				while (j > 0u && rg_algo_key_##name(&data[j - 1]) > key) \
+				{ \
+					data[j] = data[j - 1]; \
+					j--; \
+				} \
+				data[j] = item; \
+			} \
+			return; \
+		} \
+		size_t histogram[2][rg_radix_buckets]; \
+		size_t* current_hist = histogram[0]; \
+		size_t* next_hist = histogram[1]; \
+		memset(current_hist, 0, sizeof(histogram[0])); \
+		{ \
+			key_t first = rg_algo_key_##name(&data[0]); \
+			key_t previous = first; \
+			key_t varying = 0; \
+			int ascending = 1; \
+			int descending = 1; \
+			for (size_t i = 0; i < count; i++) \
+			{ \
+				key_t key = rg_algo_key_##name(&data[i]); \
+				current_hist[(size_t)(key & rg_radix_mask)]++; \
+				varying |= key ^ first; \
+				ascending &= (key >= previous); \
+				descending &= (i == 0u) | (key < previous); \
+				previous = key; \
+			} \
+			if (ascending) \
+			{ \
+				return; \
+			} \
+			if (descending) \
+			{ \
+				for (size_t lo = 0, hi = count - 1; lo < hi; lo++, hi--) \
+				{ \
+					type tmp = data[lo]; \
+					data[lo] = data[hi]; \
+					data[hi] = tmp; \
+				} \
+				return; \
+			} \
+			unsigned digits[rg_radix_passes]; \
+			unsigned digit_count = 0; \
+			for (unsigned pass = 0; pass < (unsigned)rg_radix_passes; pass++) \
+			{ \
+				if (((varying >> (pass * (digit_bits))) & rg_radix_mask) != 0) \
+				{ \
+					digits[digit_count++] = pass; \
+				} \
+			} \
+			if (digits[0] != 0u) \
+			{ \
+				/* The lowest digit never varies: rebuild the histogram for the first one that does. */ \
+				unsigned shift = digits[0] * (digit_bits); \
+				memset(current_hist, 0, sizeof(histogram[0])); \
+				for (size_t i = 0; i < count; i++) \
+				{ \
+					current_hist[(size_t)((rg_algo_key_##name(&data[i]) >> shift) & rg_radix_mask)]++; \
+				} \
+			} \
+			type* src = data; \
+			type* dst = scratch; \
+			for (unsigned d = 0; d < digit_count; d++) \
+			{ \
+				unsigned shift = digits[d] * (digit_bits); \
+				size_t sum = 0; \
+				for (size_t b = 0; b < (size_t)rg_radix_buckets; b++) \
+				{ \
+					size_t c = current_hist[b]; \
+					current_hist[b] = sum; \
+					sum += c; \
+				} \
+				if (d + 1 < digit_count) \
+				{ \
+					unsigned next_shift = digits[d + 1] * (digit_bits); \
+					memset(next_hist, 0, sizeof(histogram[0])); \
+					for (size_t i = 0; i < count; i++) \
+					{ \
+						key_t key = rg_algo_key_##name(&src[i]); \
+						next_hist[(size_t)((key >> next_shift) & rg_radix_mask)]++; \
+						dst[current_hist[(size_t)((key >> shift) & rg_radix_mask)]++] = src[i]; \
+					} \
+				} \
+				else \
+				{ \
+					for (size_t i = 0; i < count; i++) \
+					{ \
+						key_t key = rg_algo_key_##name(&src[i]); \
+						dst[current_hist[(size_t)((key >> shift) & rg_radix_mask)]++] = src[i]; \
+					} \
+				} \
+				{ \
+					type* tmp = src; \
+					src = dst; \
+					dst = tmp; \
+					size_t* tmp_hist = current_hist; \
+					current_hist = next_hist; \
+					next_hist = tmp_hist; \
+				} \
+			} \
+			if (src != data) \
+			{ \
+				memcpy(data, src, count * sizeof(type)); \
+			} \
+		} \
+	}
+
 /**
  * @brief Define typed radix sort for 32-bit integer keys
  * @param type Value type
@@ -1012,72 +1206,7 @@
 	{ \
 		return (u32)(key_fn(value)); \
 	} \
-	RGINLINE void rg_algo_radix_sort_##name(type* data, size_t count, type* scratch, size_t scratch_count) \
-	{ \
-		RG_ALGO_ASSERT(data != NULL || count == 0u); \
-		if (count < 2u) \
-		{ \
-			return; \
-		} \
-		RG_ALGO_ASSERT(scratch != NULL); \
-		RG_ALGO_ASSERT(scratch_count >= count); \
-		RG_ALGO_ASSERT(count <= SIZE_MAX / sizeof(type)); \
-		size_t byte_count = count * sizeof(type); \
-		uintptr_t data_address = (uintptr_t)(const void*)data; \
-		uintptr_t scratch_address = (uintptr_t)(const void*)scratch; \
-		RG_ALGO_ASSERT((scratch_address < data_address && data_address - scratch_address >= byte_count) || \
-		               (scratch_address > data_address && scratch_address - data_address >= byte_count)); \
-		type* src = data; \
-		type* dst = scratch; \
-		size_t counts[RG_ALGO_RADIX_BUCKETS]; \
-		u32 key_base = rg_algo_key_##name(&data[0]); \
-		u32 varying = 0u; \
-		for (size_t pass = 0; pass < RG_ALGO_RADIX_PASSES_U32; pass++) \
-		{ \
-			u32 shift = (u32)(pass * RG_ALGO_RADIX_BITS); \
-			if (pass > 0u && ((varying >> shift) & (u32)RG_ALGO_RADIX_MASK) == 0u) \
-			{ \
-				continue; \
-			} \
-			memset(counts, 0, sizeof(counts)); \
-			for (size_t i = 0; i < count; i++) \
-			{ \
-				u32 key = rg_algo_key_##name(&src[i]); \
-				if (pass == 0u) \
-				{ \
-					varying |= key ^ key_base; \
-				} \
-				size_t bucket = (size_t)((key >> shift) & (u32)RG_ALGO_RADIX_MASK); \
-				counts[bucket]++; \
-			} \
-			size_t sum = 0; \
-			size_t occupied = 0; \
-			for (size_t b = 0; b < RG_ALGO_RADIX_BUCKETS; b++) \
-			{ \
-				size_t c = counts[b]; \
-				counts[b] = sum; \
-				sum += c; \
-				occupied += (c != 0u); \
-			} \
-			if (occupied < 2u) \
-			{ \
-				continue; \
-			} \
-			for (size_t i = 0; i < count; i++) \
-			{ \
-				u32 key = rg_algo_key_##name(&src[i]); \
-				size_t bucket = (size_t)((key >> shift) & (u32)RG_ALGO_RADIX_MASK); \
-				dst[counts[bucket]++] = src[i]; \
-			} \
-			type* tmp = src; \
-			src = dst; \
-			dst = tmp; \
-		} \
-		if (src != data) \
-		{ \
-			memcpy(data, src, count * sizeof(type)); \
-		} \
-	}
+	RG_ALGO_RADIX_BODY(type, name, rg_algo_radix_sort_##name, u32, RG_ALGO_RADIX_BITS, 32)
 
 /**
  * @brief Define typed radix sort for 64-bit integer keys
@@ -1091,70 +1220,19 @@
 	{ \
 		return (u64)(key_fn(value)); \
 	} \
+	RG_ALGO_RADIX_BODY(type, name, rg_algo_radix_sort_narrow_##name, u64, RG_ALGO_RADIX_BITS, 64) \
+	RG_ALGO_RADIX_BODY(type, name, rg_algo_radix_sort_wide_##name, u64, RG_ALGO_RADIX_BITS_U64, 64) \
 	RGINLINE void rg_algo_radix_sort_##name(type* data, size_t count, type* scratch, size_t scratch_count) \
 	{ \
-		RG_ALGO_ASSERT(data != NULL || count == 0u); \
-		if (count < 2u) \
+		/* Wide digits need fewer passes but each pass pays for every bucket; */ \
+		/* small inputs take the narrow-digit sort instead. */ \
+		if (count < (size_t)RG_ALGO_RADIX_WIDE_MIN) \
 		{ \
-			return; \
+			rg_algo_radix_sort_narrow_##name(data, count, scratch, scratch_count); \
 		} \
-		RG_ALGO_ASSERT(scratch != NULL); \
-		RG_ALGO_ASSERT(scratch_count >= count); \
-		RG_ALGO_ASSERT(count <= SIZE_MAX / sizeof(type)); \
-		size_t byte_count = count * sizeof(type); \
-		uintptr_t data_address = (uintptr_t)(const void*)data; \
-		uintptr_t scratch_address = (uintptr_t)(const void*)scratch; \
-		RG_ALGO_ASSERT((scratch_address < data_address && data_address - scratch_address >= byte_count) || \
-		               (scratch_address > data_address && scratch_address - data_address >= byte_count)); \
-		type* src = data; \
-		type* dst = scratch; \
-		size_t counts[RG_ALGO_RADIX_BUCKETS]; \
-		u64 key_base = rg_algo_key_##name(&data[0]); \
-		u64 varying = 0u; \
-		for (size_t pass = 0; pass < RG_ALGO_RADIX_PASSES_U64; pass++) \
+		else \
 		{ \
-			u32 shift = (u32)(pass * RG_ALGO_RADIX_BITS); \
-			if (pass > 0u && ((varying >> shift) & (u64)RG_ALGO_RADIX_MASK) == 0u) \
-			{ \
-				continue; \
-			} \
-			memset(counts, 0, sizeof(counts)); \
-			for (size_t i = 0; i < count; i++) \
-			{ \
-				u64 key = rg_algo_key_##name(&src[i]); \
-				if (pass == 0u) \
-				{ \
-					varying |= key ^ key_base; \
-				} \
-				size_t bucket = (size_t)((key >> shift) & (u64)RG_ALGO_RADIX_MASK); \
-				counts[bucket]++; \
-			} \
-			size_t sum = 0; \
-			size_t occupied = 0; \
-			for (size_t b = 0; b < RG_ALGO_RADIX_BUCKETS; b++) \
-			{ \
-				size_t c = counts[b]; \
-				counts[b] = sum; \
-				sum += c; \
-				occupied += (c != 0u); \
-			} \
-			if (occupied < 2u) \
-			{ \
-				continue; \
-			} \
-			for (size_t i = 0; i < count; i++) \
-			{ \
-				u64 key = rg_algo_key_##name(&src[i]); \
-				size_t bucket = (size_t)((key >> shift) & (u64)RG_ALGO_RADIX_MASK); \
-				dst[counts[bucket]++] = src[i]; \
-			} \
-			type* tmp = src; \
-			src = dst; \
-			dst = tmp; \
-		} \
-		if (src != data) \
-		{ \
-			memcpy(data, src, count * sizeof(type)); \
+			rg_algo_radix_sort_wide_##name(data, count, scratch, scratch_count); \
 		} \
 	}
 
