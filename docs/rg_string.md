@@ -52,8 +52,8 @@ bytes from 128 through 255 pass through unchanged.
 `rg_strlower_n` processes exactly the supplied number of bytes, so it avoids a
 terminator scan and continues through embedded null bytes. It does not append a
 terminator. When AVX2 is enabled for the compilation target, ranges of 32 bytes
-or more use the vector path; shorter ranges and portable builds use the scalar
-path.
+or more use the vector path; on AArch64 the NEON path starts at 16 bytes.
+Shorter ranges and portable builds use the scalar path.
 
 `rg_split` replaces every delimiter with a null terminator and stores pointers
 to non-empty fields. Empty fields, including leading and trailing fields, are
@@ -149,10 +149,12 @@ copy/append operations.
 
 The explicit-length lowercase and UTF-8 length functions automatically use
 AVX2 intrinsics when the compiler target defines AVX2 support, such as MSVC's
-`/arch:AVX2` or GCC and Clang's `-mavx2`. The vector loop begins at 32 bytes,
-the crossover selected by repeated scalar-versus-AVX2 benchmarks. Define
-`RG_STRING_NO_SIMD` to force the portable scalar implementation. Selection is
-compile-time; the header does not perform runtime CPU detection.
+`/arch:AVX2` or GCC and Clang's `-mavx2`, and NEON intrinsics on AArch64 with
+GCC or Clang. The AVX2 loop begins at 32 bytes, the crossover selected by
+repeated scalar-versus-AVX2 benchmarks; the NEON loop handles 16 bytes per
+step and begins at 16. Define `RG_STRING_NO_SIMD` to force the portable scalar
+implementation. Selection is compile-time; the header does not perform runtime
+CPU detection.
 
 ## Thread safety
 

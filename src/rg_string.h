@@ -40,14 +40,21 @@
 #include <string.h>
 
 #undef RG_STRING_USE_AVX2
+#undef RG_STRING_USE_NEON
 #if !defined(RG_STRING_NO_SIMD) && (defined(__AVX2__) || defined(_M_AVX2))
 #define RG_STRING_USE_AVX2 1
+#define RG_STRING_USE_NEON 0
 #include <immintrin.h>
 #if RG_COMPILER_MSVC
 #include <intrin.h>
 #endif
+#elif !defined(RG_STRING_NO_SIMD) && defined(__ARM_NEON) && (defined(__GNUC__) || defined(__clang__))
+#define RG_STRING_USE_AVX2 0
+#define RG_STRING_USE_NEON 1
+#include <arm_neon.h>
 #else
 #define RG_STRING_USE_AVX2 0
+#define RG_STRING_USE_NEON 0
 #endif
 
 // =============================================================================
@@ -478,6 +485,23 @@ RGINLINE char* rg_strlower_n(char* str, size_t len)
 			_mm256_storeu_si256((__m256i*)(str + i), bytes);
 		}
 	}
+#elif RG_STRING_USE_NEON
+	if (len >= 16u)
+	{
+		// ASCII letters are below 0x80, so unsigned compares select them.
+		const uint8x16_t before_a = vdupq_n_u8('A' - 1);
+		const uint8x16_t after_z = vdupq_n_u8('Z' + 1);
+		const uint8x16_t delta = vdupq_n_u8(0x20);
+		size_t vector_end = len & ~(size_t)15u;
+
+		for (; i < vector_end; i += 16u)
+		{
+			uint8x16_t bytes = vld1q_u8((const uint8_t*)(str + i));
+			uint8x16_t uppercase = vandq_u8(vcgtq_u8(bytes, before_a), vcltq_u8(bytes, after_z));
+			bytes = vaddq_u8(bytes, vandq_u8(uppercase, delta));
+			vst1q_u8((uint8_t*)(str + i), bytes);
+		}
+	}
 #endif
 	for (; i < len; i++)
 	{
@@ -815,6 +839,21 @@ RGINLINE size_t rg_utf8_len_n(const char* str, size_t len)
 			__m256i matches = _mm256_cmpeq_epi8(high, continuation);
 			u32 mask = (u32)_mm256_movemask_epi8(matches);
 			count -= rg_string_popcount32(mask);
+		}
+	}
+#elif RG_STRING_USE_NEON
+	if (len >= 16u)
+	{
+		const uint8x16_t high_mask = vdupq_n_u8(0xc0);
+		const uint8x16_t continuation = vdupq_n_u8(0x80);
+		size_t vector_end = len & ~(size_t)15u;
+
+		for (; i < vector_end; i += 16u)
+		{
+			uint8x16_t bytes = vld1q_u8((const uint8_t*)(str + i));
+			uint8x16_t matches = vceqq_u8(vandq_u8(bytes, high_mask), continuation);
+			// Each matching lane is 0xff; the shift leaves 1 per lane to sum.
+			count -= vaddvq_u8(vshrq_n_u8(matches, 7));
 		}
 	}
 #endif
@@ -1174,5 +1213,6 @@ RGINLINE void rgs_clear(RgString* s)
 }
 
 #undef RG_STRING_USE_AVX2
+#undef RG_STRING_USE_NEON
 
 #endif // RG_STRING_H

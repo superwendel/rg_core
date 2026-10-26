@@ -232,7 +232,7 @@ typedef union rg_vec2
 
 /** @brief 3D f32 vector - 16-byte aligned for SIMD */
 #ifdef RG_MATH_VEC3_PLAIN
-typedef RG_ALIGN16 union rg_vec3
+typedef union RG_ALIGN16 rg_vec3
 {
 	f32 data[4]; // 4th element is padding
 	struct
@@ -241,7 +241,7 @@ typedef RG_ALIGN16 union rg_vec3
 	};
 } rg_vec3;
 #else
-typedef RG_ALIGN16 union rg_vec3
+typedef union RG_ALIGN16 rg_vec3
 {
 	f32 data[4]; // 4th element is padding for SIMD
 #ifdef RG_MATH_SIMD
@@ -256,7 +256,7 @@ typedef RG_ALIGN16 union rg_vec3
 
 /** @brief 4D f32 vector - 16-byte aligned for SIMD */
 #ifdef RG_MATH_VEC4_PLAIN
-typedef RG_ALIGN16 union rg_vec4
+typedef union RG_ALIGN16 rg_vec4
 {
 	f32 data[4];
 	struct
@@ -265,7 +265,7 @@ typedef RG_ALIGN16 union rg_vec4
 	};
 } rg_vec4;
 #else
-typedef RG_ALIGN16 union rg_vec4
+typedef union RG_ALIGN16 rg_vec4
 {
 	f32 data[4];
 #ifdef RG_MATH_SIMD
@@ -289,7 +289,7 @@ typedef union rg_vec2i
 } rg_vec2i;
 
 /** @brief 3D integer vector - 16-byte aligned for SIMD */
-typedef RG_ALIGN16 union rg_vec3i
+typedef union RG_ALIGN16 rg_vec3i
 {
 	i32 data[4]; // 4th element is padding
 #ifdef RG_MATH_SIMD
@@ -302,7 +302,7 @@ typedef RG_ALIGN16 union rg_vec3i
 } rg_vec3i;
 
 /** @brief 4D integer vector - 16-byte aligned for SIMD */
-typedef RG_ALIGN16 union rg_vec4i
+typedef union RG_ALIGN16 rg_vec4i
 {
 	i32 data[4];
 #ifdef RG_MATH_SIMD
@@ -327,7 +327,7 @@ typedef struct rg_mat3
 } rg_mat3;
 
 /** @brief 4x4 matrix (column-major) - 16-byte aligned for SIMD */
-typedef RG_ALIGN16 struct rg_mat4
+typedef struct RG_ALIGN16 rg_mat4
 {
 	f32 m[16];
 } rg_mat4;
@@ -369,7 +369,7 @@ typedef struct rg_mat4x3
 } rg_mat4x3;
 
 /** @brief Quaternion for rotations - 16-byte aligned for SIMD */
-typedef RG_ALIGN16 union rg_quat
+typedef union RG_ALIGN16 rg_quat
 {
 	f32 data[4];
 #ifdef RG_MATH_SIMD
