@@ -22,6 +22,8 @@ if /I "%TARGET%"=="test_math" goto test_math
 if /I "%TARGET%"=="test_sdl" goto test_sdl
 if /I "%TARGET%"=="test_input" goto test_input
 if /I "%TARGET%"=="test_atomic" goto test_atomic
+if /I "%TARGET%"=="test_thread" goto test_thread
+if /I "%TARGET%"=="test_task" goto test_task
 if /I "%TARGET%"=="bench" goto bench
 if /I "%TARGET%"=="bench_median" goto bench_median
 if /I "%TARGET%"=="bench_algo" goto bench_algo
@@ -85,6 +87,10 @@ if errorlevel 1 exit /b 1
 call "%~f0" test_math
 if errorlevel 1 exit /b 1
 call "%~f0" test_atomic
+if errorlevel 1 exit /b 1
+call "%~f0" test_thread
+if errorlevel 1 exit /b 1
+call "%~f0" test_task
 if errorlevel 1 exit /b 1
 call :find_sdl
 if errorlevel 1 (
@@ -269,6 +275,32 @@ echo Building rg_atomic tests...
 cl %COMMON_FLAGS% /std:c11 tests\test_atomic.c /Fe:test_atomic.exe
 if errorlevel 1 exit /b 1
 test_atomic.exe
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:test_thread
+call :ensure_compiler
+if errorlevel 1 exit /b 1
+
+set "COMMON_FLAGS=/nologo /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS"
+
+echo Building rg_thread tests...
+cl %COMMON_FLAGS% /std:c11 tests\test_thread.c /Fe:test_thread.exe
+if errorlevel 1 exit /b 1
+test_thread.exe
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:test_task
+call :ensure_compiler
+if errorlevel 1 exit /b 1
+
+set "COMMON_FLAGS=/nologo /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS"
+
+echo Building rg_task tests...
+cl %COMMON_FLAGS% /std:c11 tests\test_task.c /Fe:test_task.exe
+if errorlevel 1 exit /b 1
+test_task.exe
 if errorlevel 1 exit /b 1
 exit /b 0
 

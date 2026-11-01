@@ -166,6 +166,10 @@ intentional.
   with optional rolling frame and named-section history.
 - [`rg_atomic.h`](docs/rg_atomic.md) — minimal u32/u64/pointer atomics: acquire
   loads, release stores, fetch-add, exchange, compare-and-swap, and a fence.
+- [`rg_thread.h`](docs/rg_thread.md) — threads, mutex, condition variable,
+  semaphore, and auto-reset event over Win32 and pthreads.
+- [`rg_task.h`](docs/rg_task.md) — bounded worker pool with priority queues,
+  cooperative cancellation, and a completion ring the owner thread drains.
 - [`rg_log.h`](docs/rg_log.md) — severity-based logging with source locations,
   optional color and timestamps, and `rg_sprintf` formatting.
 
