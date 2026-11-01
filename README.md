@@ -164,6 +164,8 @@ intentional.
   and yielding with native and custom platform backends.
 - [`rg_prof.h`](docs/rg_prof.md) — lock-free per-thread CPU scopes and events,
   with optional rolling frame and named-section history.
+- [`rg_atomic.h`](docs/rg_atomic.md) — minimal u32/u64/pointer atomics: acquire
+  loads, release stores, fetch-add, exchange, compare-and-swap, and a fence.
 - [`rg_log.h`](docs/rg_log.md) — severity-based logging with source locations,
   optional color and timestamps, and `rg_sprintf` formatting.
 
