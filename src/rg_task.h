@@ -9,7 +9,7 @@
 //   static void wake(void* user) { /* e.g. rg_event_signal */ }
 //
 //   RgTaskPool pool;
-//   rg_task_pool_init(&pool, &arena, 4 /*threads*/, 2 /*priorities*/, 256 /*queue*/, wake, NULL);
+//   rg_task_pool_init(&pool, &arena, 4 /*threads*/, 2 /*priorities*/, 256 /*queue*/, wake, NULL, NULL, NULL);
 //   RgTask t = {work, user, 0 /*priority*/, 0, &cancel_flag};
 //   if (!rg_task_submit(&pool, &t)) { /* full: retry later */ }
 //   ...
@@ -30,6 +30,9 @@
 //   - Shutdown stops accepting, lets running tasks finish (queued tasks are
 //     discarded and reported in dropped_on_shutdown), joins every thread.
 //   - Memory comes from the arena at init; nothing allocates afterwards.
+//   - To give each worker thread-local state (scratch arenas, COM init), pass
+//     thread_start / thread_start_user to rg_task_pool_init; it runs once on
+//     each worker thread, with the worker index, before any task.
 //   - All functions have internal linkage and work in unity builds.
 //
 // Author: Steven Wendel (superwendel)
@@ -69,7 +72,15 @@ typedef struct RgTaskQueue
 	u32 tail;
 } RgTaskQueue;
 
-typedef struct RgTaskPool
+typedef struct RgTaskPool RgTaskPool;
+
+typedef struct RgTaskWorkerArgs
+{
+	RgTaskPool* pool;
+	u32 index;
+} RgTaskWorkerArgs;
+
+struct RgTaskPool
 {
 	RgMutex lock;
 	RgCondVar work_available;
@@ -77,6 +88,7 @@ typedef struct RgTaskPool
 	u32 priority_count;
 	RgTaskQueue completed;
 	RgThread threads[RG_TASK_MAX_THREADS];
+	RgTaskWorkerArgs worker_args[RG_TASK_MAX_THREADS];
 	u32 thread_count;
 	u32 stop;
 	u32 running; /* tasks currently executing */
@@ -84,8 +96,12 @@ typedef struct RgTaskPool
 	u32 completion_overflow; /* always 0; nonzero means the sizing invariant broke */
 	void (*wake)(void* user);
 	void* wake_user;
+	/* Optional: called once on each worker thread before it takes work, with
+	 * the worker's index [0, thread_count). */
+	void (*thread_start)(void* user, u32 index);
+	void* thread_start_user;
 	int initialized;
-} RgTaskPool;
+};
 
 RGINLINE void rg_task_pool_shutdown(RgTaskPool* pool);
 
@@ -127,7 +143,9 @@ RGINLINE int rg_task_queue_pop(RgTaskQueue* q, RgTask* out)
 
 static int rg_task_worker(void* user)
 {
-	RgTaskPool* pool = (RgTaskPool*)user;
+	RgTaskWorkerArgs* args = (RgTaskWorkerArgs*)user;
+	RgTaskPool* pool = args->pool;
+	if (pool->thread_start) pool->thread_start(pool->thread_start_user, args->index);
 	for (;;)
 	{
 		RgTask task;
@@ -164,10 +182,13 @@ static int rg_task_worker(void* user)
 /** Create the pool. queue_capacity is per priority; the completion ring holds
  * priority_count * queue_capacity entries. Threads start immediately. */
 RGINLINE int rg_task_pool_init(RgTaskPool* pool, RgArena* arena, u32 thread_count, u32 priority_count,
-                               u32 queue_capacity, void (*wake)(void* user), void* wake_user)
+                               u32 queue_capacity, void (*wake)(void* user), void* wake_user,
+                               void (*thread_start)(void* user, u32 index), void* thread_start_user)
 {
 	u32 i;
 	memset(pool, 0, sizeof *pool);
+	pool->thread_start = thread_start;
+	pool->thread_start_user = thread_start_user;
 	if (!thread_count || thread_count > RG_TASK_MAX_THREADS) return 0;
 	if (!priority_count || priority_count > RG_TASK_MAX_PRIORITIES) return 0;
 	pool->priority_count = priority_count;
@@ -188,7 +209,9 @@ RGINLINE int rg_task_pool_init(RgTaskPool* pool, RgArena* arena, u32 thread_coun
 		name[7] = (char)('0' + (i / 10u) % 10u);
 		name[8] = (char)('0' + i % 10u);
 		name[9] = 0;
-		if (!rg_thread_create(&pool->threads[i], rg_task_worker, pool, name, 0))
+		pool->worker_args[i].pool = pool;
+		pool->worker_args[i].index = i;
+		if (!rg_thread_create(&pool->threads[i], rg_task_worker, &pool->worker_args[i], name, 0))
 		{
 			rg_task_pool_shutdown(pool);
 			return 0;

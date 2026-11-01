@@ -87,7 +87,7 @@ static void test_priority_and_bounds(RgArena* arena)
 	memset(&g_state, 0, sizeof g_state);
 	rg_sem_init(&g_state.gate, 0);
 	/* One worker so execution order is observable; capacity 4 per priority. */
-	CHECK(rg_task_pool_init(&pool, arena, 1, 3, 4, wake_cb, NULL));
+	CHECK(rg_task_pool_init(&pool, arena, 1, 3, 4, wake_cb, NULL, NULL, NULL));
 	t.fn = gate_task; t.user = (void*)(uintptr_t)1; t.priority = 0; t.id = 1; t.cancel = NULL;
 	CHECK(rg_task_submit(&pool, &t));
 	rg_time_sleep_ms(20); /* let the worker take the gate task */
@@ -132,7 +132,7 @@ static void test_load_no_lost_wakes(RgArena* arena)
 	u32 submitted = 0, completed = 0, retries = 0, loops = 0;
 	const u32 target = 20000;
 	memset(&g_state, 0, sizeof g_state);
-	CHECK(rg_task_pool_init(&pool, arena, 4, 1, 64, wake_cb, NULL));
+	CHECK(rg_task_pool_init(&pool, arena, 4, 1, 64, wake_cb, NULL, NULL, NULL));
 	t.fn = record_task; t.priority = 0; t.cancel = NULL;
 	while (completed < target)
 	{
@@ -167,7 +167,7 @@ static void test_cancel(RgArena* arena)
 	u32 cancel = 0;
 	u64 t0;
 	memset(&g_state, 0, sizeof g_state);
-	CHECK(rg_task_pool_init(&pool, arena, 1, 1, 4, wake_cb, NULL));
+	CHECK(rg_task_pool_init(&pool, arena, 1, 1, 4, wake_cb, NULL, NULL, NULL));
 	t.fn = cancellable_task; t.user = (void*)(uintptr_t)5; t.priority = 0; t.id = 5; t.cancel = &cancel;
 	CHECK(rg_task_submit(&pool, &t));
 	rg_time_sleep_ms(30);
@@ -187,7 +187,7 @@ static void test_shutdown_drops_queued(RgArena* arena)
 	u32 i;
 	memset(&g_state, 0, sizeof g_state);
 	rg_sem_init(&g_state.gate, 0);
-	CHECK(rg_task_pool_init(&pool, arena, 1, 1, 16, wake_cb, NULL));
+	CHECK(rg_task_pool_init(&pool, arena, 1, 1, 16, wake_cb, NULL, NULL, NULL));
 	t.fn = gate_task; t.user = (void*)(uintptr_t)1; t.priority = 0; t.id = 1; t.cancel = NULL;
 	CHECK(rg_task_submit(&pool, &t));
 	rg_time_sleep_ms(20);

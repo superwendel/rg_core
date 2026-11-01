@@ -29,7 +29,7 @@ int main(void)
 	RgTask done[16];
 	u32 n;
 	rg_event_init(&wake);
-	rg_task_pool_init(&pool, &arena, 4, 2, 256, on_done, &wake);
+	rg_task_pool_init(&pool, &arena, 4, 2, 256, on_done, &wake, NULL, NULL);
 	if (!rg_task_submit(&pool, &task))
 		return 1; /* queue full: apply backpressure */
 	rg_event_wait(&wake, RG_THREAD_INFINITE);
@@ -44,7 +44,7 @@ int main(void)
 
 | Function | Behavior |
 |---|---|
-| `rg_task_pool_init(pool, arena, threads, priorities, queue_capacity, wake, user)` | Allocate queues from the arena and start the threads |
+| `rg_task_pool_init(pool, arena, threads, priorities, queue_capacity, wake, user, thread_start, start_user)` | Allocate queues from the arena and start the threads; `thread_start(start_user, index)` runs once per worker before any task (may be NULL) |
 | `rg_task_submit(pool, task)` | Owner thread; 0 when that priority's queue is full, when the tasks submitted but not yet drained would exceed the completion ring, or when the pool is stopping |
 | `rg_task_drain_completed(pool, out, capacity)` | Owner thread; moves finished tasks out of the ring |
 | `rg_task_pending(pool)` | Queued plus running tasks |
