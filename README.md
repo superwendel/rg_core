@@ -20,7 +20,7 @@ state across the program.
 
 Add `rg_core/src` to the compiler include path and include only the modules you
 use. Most modules depend only on the C standard library. `rg_sdl.h`,
-`rg_window.h`, `rg_input.h`, and `rg_gpu.h` require SDL3. The hybrid formatter
+`rg_window.h`, `rg_input.h`, and `rg_gpu.h` require SDL3 (`rg_input_core.h` does not). The hybrid formatter
 can optionally use an x64 assembly object.
 
 ## Quick start
@@ -205,7 +205,9 @@ intentional.
 
 - [`rg_sdl.h`](docs/rg_sdl.md) — SDL application lifetime and error access.
 - [`rg_window.h`](docs/rg_window.md) — window creation and display controls.
-- [`rg_input.h`](docs/rg_input.md) — immediate input state and ordered events.
+- [`rg_input_core.h`](docs/rg_input.md) — backend-neutral input state, ordered events, key
+  ids and names; no SDL. Windowing backends feed it directly.
+- [`rg_input.h`](docs/rg_input.md) — immediate input state and ordered events. SDL3 adapter over `rg_input_core.h`.
 - [`rg_gpu.h`](docs/rg_gpu.md) — GPU device setup, uploads, and compiled shaders.
 
 ## Performance

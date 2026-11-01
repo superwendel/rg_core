@@ -4,6 +4,7 @@
 #include "../src/rg_thread.h"
 #include "../src/rg_thread.h"
 #include "../src/rg_atomic.h"
+#include "../src/rg_time.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -186,7 +187,7 @@ static int event_waiter(void* user)
 	EventState* s = (EventState*)user;
 	while (!rg_atomic_load_acquire_u32((u32*)&s->stop))
 	{
-		if (rg_event_wait(&s->event, 50)) s->wakes++;
+		if (rg_event_wait(&s->event, 50)) rg_atomic_inc_u32(&s->wakes);
 	}
 	return 0;
 }
@@ -216,10 +217,17 @@ static void test_event(void)
 			s.signals_sent++;
 		}
 	}
+	/* The signal stays pending until the waiter consumes it, but under load
+	 * the waiter may not have been scheduled yet: wait for its first wake
+	 * before stopping so the lower bound below is deterministic. */
+	{
+		u32 spins = 0;
+		while (rg_atomic_load_acquire_u32(&s.wakes) == 0 && spins++ < 5000) rg_time_sleep_ms(1);
+	}
 	rg_atomic_store_release_u32((u32*)&s.stop, 1);
 	rg_event_signal(&s.event);
 	rg_thread_join(&t, NULL);
-	/* Signals coalesce, so wakes <= signals; but at least one wake happened. */
+	/* Signals coalesce, so wakes <= signals; and at least one wake happened. */
 	CHECK(s.wakes >= 1 && s.wakes <= s.signals_sent + 1);
 	rg_event_destroy(&s.event);
 }

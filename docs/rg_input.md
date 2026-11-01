@@ -158,3 +158,37 @@ On Linux x86-64 (Intel Core i3-1005G1, GCC 13.3, SDL3, `./build.sh bench_input`)
 of seven samples and three process runs on one pinned core. The keyboard
 snapshot copies use 16-byte SSE2 moves (NEON on AArch64); `RG_INPUT_NO_SIMD`
 selects a portable loop that costs a few nanoseconds more.
+
+## Backend-neutral core (`rg_input_core.h`)
+
+`rg_input.h` is an SDL3 adapter over `rg_input_core.h`, which has no SDL or
+platform dependency. The core owns `RgInputState`, `RgInputEventQueue` and
+every query; it names keys with `RgKey` (`RG_KEY_*`, USB HID usage ids equal
+to SDL3 scancodes) and modifiers with `RgMod` (`RG_MOD_*`, equal to
+`SDL_KMOD_*`). `rg_input.h` static-asserts every value against SDL, so SDL
+names and RG names are interchangeable in code that includes the adapter.
+
+A windowing backend that is not SDL (a Win32 message loop, for example) feeds
+the state directly:
+
+```c
+#include "rg_input_core.h"
+
+rg_input_begin_frame(&input);                 // once per frame, before feeding
+rg_input_set_key(&input, RG_KEY_A, true);     // WM_KEYDOWN
+rg_input_set_mouse_position(&input, x, y);    // WM_MOUSEMOVE; delta accumulates
+rg_input_add_wheel(&input, dx, dy);           // WM_MOUSEHWHEEL / WM_MOUSEWHEEL
+rg_input_push_text(&input, utf8);             // WM_CHAR; appends, whole code points only
+rg_input_clear_keys(&input);                  // WM_KILLFOCUS
+```
+
+Ordered events are produced with `rg_input_event_queue_push` and
+`rg_input_event_queue_push_text`, filling the same `RgInputEvent` fields the
+SDL adapter fills. `rg_key_name` returns a label for shortcut hints
+("Left Ctrl", "PageUp").
+
+Differences from the SDL-only header this replaces: `text_input_buffer` holds
+every text event of the frame concatenated (the old behavior kept only the
+last one), `mouse_scroll_x` accumulates horizontal wheel motion, and
+`rg_input_begin_frame` clears the mouse delta (the SDL sampler overwrites it
+anyway).

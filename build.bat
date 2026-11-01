@@ -22,6 +22,7 @@ if /I "%TARGET%"=="test_math" goto test_math
 if /I "%TARGET%"=="test_sdl" goto test_sdl
 if /I "%TARGET%"=="test_input" goto test_input
 if /I "%TARGET%"=="test_atomic" goto test_atomic
+if /I "%TARGET%"=="test_input_core" goto test_input_core
 if /I "%TARGET%"=="test_thread" goto test_thread
 if /I "%TARGET%"=="test_task" goto test_task
 if /I "%TARGET%"=="bench" goto bench
@@ -91,6 +92,8 @@ if errorlevel 1 exit /b 1
 call "%~f0" test_thread
 if errorlevel 1 exit /b 1
 call "%~f0" test_task
+if errorlevel 1 exit /b 1
+call "%~f0" test_input_core
 if errorlevel 1 exit /b 1
 call :find_sdl
 if errorlevel 1 (
@@ -275,6 +278,23 @@ echo Building rg_atomic tests...
 cl %COMMON_FLAGS% /std:c11 tests\test_atomic.c /Fe:test_atomic.exe
 if errorlevel 1 exit /b 1
 test_atomic.exe
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:test_input_core
+call :ensure_compiler
+if errorlevel 1 exit /b 1
+
+set "COMMON_FLAGS=/nologo /W4 /WX /O2 /D_CRT_SECURE_NO_WARNINGS"
+
+echo Building rg_input_core tests (no SDL)...
+cl %COMMON_FLAGS% /std:c11 tests\test_input_core.c /Fe:test_input_core.exe
+if errorlevel 1 exit /b 1
+test_input_core.exe
+if errorlevel 1 exit /b 1
+cl %COMMON_FLAGS% /std:c11 /DRG_INPUT_NO_SIMD tests\test_input_core.c /Fe:test_input_core_scalar.exe
+if errorlevel 1 exit /b 1
+test_input_core_scalar.exe
 if errorlevel 1 exit /b 1
 exit /b 0
 
@@ -753,6 +773,7 @@ del /q test_algo.exe test_algo_config.exe test_algo_cpp.exe 2>nul
 del /q test_string.exe test_string_avx2.exe test_string_scalar.exe test_string_secure.exe test_string_cpp.exe 2>nul
 del /q test_math.exe test_math_avx2.exe test_math_scalar.exe test_math_checked.exe test_math_plain.exe test_math_lean.exe test_math_cpp.exe 2>nul
 del /q test_sdl.exe test_input.exe 2>nul
+del /q test_input_core.exe test_input_core.obj test_input_core_scalar.exe test_input_core_scalar.obj 2>nul
 del /q test_sprintf.obj test_log.obj test_assert.obj test_assert_disabled.obj test_mem.obj test_hash.obj test_random.obj 2>nul
 del /q test_containers.obj test_containers_config.obj test_containers_cpp.obj test_containers_u32_index.obj test_containers_u32_index_config.obj 2>nul
 del /q test_time.obj test_time_custom.obj test_time_cpp.obj test_time_os_clock.obj test_time_tsc_calibrated.obj 2>nul

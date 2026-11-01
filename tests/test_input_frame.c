@@ -166,7 +166,8 @@ static void test_frame_modifiers(void)
 	CHECK(storage[2].modifiers == SDL_KMOD_LSHIFT);
 	CHECK(storage[4].modifiers == SDL_KMOD_NONE);
 	CHECK(queue.modifiers == SDL_KMOD_NONE);
-	CHECK(input.has_text_input && strcmp(input.text_input_buffer, "a") == 0);
+	// Both text events of the frame are kept, in order (rg_input_core appends).
+	CHECK(input.has_text_input && strcmp(input.text_input_buffer, "Aa") == 0);
 
 	// Overflow must still carry the final modifier state to the following frame.
 	queue.capacity = 1;
